@@ -5,11 +5,13 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
 import {IPlatformToken} from "../interface/IPlatformToken.sol";
 import {IUniswapUtil} from "../interface/IUniswapUtil.sol";
+import {IVaultGateway, SupportTokensToOpenInfo} from "../interface/IVaultGateway.sol";
 import {IRouter} from "../interface/IRouter.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {IERC721MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/IERC721MetadataUpgradeable.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 import {SafeToken} from "../util/SafeToken.sol";
+
 
 contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     event Mint(
@@ -37,6 +39,7 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     IUniswapUtil public uniswapUtil;
     address public weth;
     IRouter[] public routers;
+    mapping(address => SupportTokensToOpenInfo) public supportTokensToOpen;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "VaultGateway::onlyEOA:: not eoa");
@@ -64,7 +67,8 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         address _usdtAddr,
         uint256 _defaultSlippage,
         address _uniswapUtilAddr,
-        address _weth
+        address _weth,
+        SupportTokensToOpenInfo[] memory _supportTokensToOpen
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
@@ -83,6 +87,11 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         defaultSlippage = _defaultSlippage;
         uniswapUtil = IUniswapUtil(_uniswapUtilAddr);
         weth = _weth;
+        for (uint256 i = 0; i < _supportTokensToOpen.length; i++) {
+            supportTokensToOpen[
+                _supportTokensToOpen[i]._token
+            ] = _supportTokensToOpen[i];
+        }
     }
 
     function addRouter(address _router) external onlyOwner {
@@ -207,43 +216,49 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             );
     }
 
-    // usd per platform token
-    function _calcPlatformTokenPrice() private view returns (uint256) {
-        // TODO
+    function reserveTotal() public view returns (uint256) {
         uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
-        require(
-            _usdtPrice > 0,
-            "VaultGateway::_calcPlatformTokenPrice: bad usdt price"
-        );
-        uint256 platformTokenTotal = platformToken.totalSupply();
+        require(_usdtPrice > 0, "VaultGateway::reserveTotal: bad usdt price");
+        return
+            (_usdtPrice * SafeToken.myBalance(usdtAddr)) /
+            (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals());
+    }
+
+    function platformTokenTotal() public view returns (uint256) {
+        uint256 _platformTokenTotal = platformToken.totalSupply();
         for (uint256 i = 0; i < routers.length; i++) {
             (uint256 _vLong, bool _bLong) = routers[i].totalLongFloat();
             if (!_bLong) {
-                platformTokenTotal = platformTokenTotal + _vLong;
+                _platformTokenTotal = _platformTokenTotal + _vLong;
             } else {
                 require(
-                    platformTokenTotal >= _vLong,
-                    "VaultGateway::_calcPlatformTokenPrice: platformTokenTotal not enough"
+                    _platformTokenTotal >= _vLong,
+                    "VaultGateway::platformTokenTotal: platformTokenTotal not enough"
                 );
-                platformTokenTotal = platformTokenTotal - _vLong;
+                _platformTokenTotal = _platformTokenTotal - _vLong;
             }
             (uint256 _vShort, bool _bShort) = routers[i].totalShortFloat();
             if (!_bShort) {
-                platformTokenTotal = platformTokenTotal + _vShort;
+                _platformTokenTotal = _platformTokenTotal + _vShort;
             } else {
                 require(
-                    platformTokenTotal >= _vShort,
-                    "VaultGateway::_calcPlatformTokenPrice: platformTokenTotal not enough"
+                    _platformTokenTotal >= _vShort,
+                    "VaultGateway::platformTokenTotal: platformTokenTotal not enough"
                 );
-                platformTokenTotal = platformTokenTotal - _vShort;
+                _platformTokenTotal = _platformTokenTotal - _vShort;
             }
         }
+        return _platformTokenTotal;
+    }
+
+    // usd per platform token
+    function _calcPlatformTokenPrice() private view returns (uint256) {
+        uint256 _reserveTotal = reserveTotal();
+        if (_reserveTotal == 0) {
+            return 100000000;
+        } 
         return
-            (_usdtPrice *
-                SafeToken.myBalance(usdtAddr) *
-                platformToken.decimals()) /
-            (platformTokenTotal *
-                (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals()));
+            (reserveTotal() * platformToken.decimals()) / platformTokenTotal();
     }
 
     function redeem(

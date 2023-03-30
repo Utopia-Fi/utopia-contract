@@ -33,6 +33,8 @@ contract PriceOracle is IPriceOracleGetter, OwnableUpgradeable {
         address baseCurrency,
         uint256 baseCurrencyUnit
     ) external initializer {
+        OwnableUpgradeable.__Ownable_init();
+
         _setFallbackOracle(fallbackOracle);
         _setAssetsSources(assets, sources);
         BASE_CURRENCY = baseCurrency;

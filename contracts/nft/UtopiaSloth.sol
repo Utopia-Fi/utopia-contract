@@ -19,7 +19,8 @@ contract UtopiaSloth is
         address indexed _user,
         address indexed _tokenToBuy,
         uint256 _amount,
-        uint256 _walletType
+        uint256 _walletType,
+        address _inviter
     );
 
     using StringsUpgradeable for uint256;
@@ -31,6 +32,8 @@ contract UtopiaSloth is
     IPriceOracleGetter public priceOracle;
     mapping(address => bool) public supportTokensToBuy;
     address payable public foundation;
+    uint256 public maxSoldAmount;
+    uint256 public soldAmount;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "UtopiaSloth::onlyEOA: not eoa");
@@ -59,6 +62,7 @@ contract UtopiaSloth is
         }
         foundation = payable(_foundation);
         WETH = _wethAddr;
+        maxSoldAmount = 5000;
     }
 
     function changePricePer(uint256 _pricePer) external onlyOwner {
@@ -68,7 +72,8 @@ contract UtopiaSloth is
     function mintByUser(
         uint256 _amount,
         address _tokenToBuy,
-        uint256 _walletType  // 0 metamask, 1 okx wallet
+        uint256 _walletType,  // 0 metamask, 1 okx wallet
+        address _inviter
     ) external payable onlyEOA nonReentrant {
         require(
             pricePer > 0,
@@ -77,6 +82,10 @@ contract UtopiaSloth is
         require(
             _tokenToBuy == address(0) || supportTokensToBuy[_tokenToBuy],
             "UtopiaSloth::mintByUser: not support token to buy"
+        );
+        require(
+            _amount <= BATCH_SIZE,
+            "UtopiaSloth::mintByUser: too large _amount"
         );
         uint256 _needEth = _amount * pricePer; // total ETH
         if (_tokenToBuy == address(0)) {
@@ -108,7 +117,9 @@ contract UtopiaSloth is
             );
         }
         _safeMint(msg.sender, _amount);
-        emit Mint(msg.sender, _tokenToBuy, _amount, _walletType);
+        soldAmount = soldAmount + _amount;
+        require(soldAmount <= maxSoldAmount, "UtopiaSloth::mintByUser: exceed maxSoldAmount");
+        emit Mint(msg.sender, _tokenToBuy, _amount, _walletType, _inviter);
     }
 
     function mint(uint256 amount) external onlyOwner {
