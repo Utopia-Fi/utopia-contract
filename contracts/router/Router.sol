@@ -3,42 +3,66 @@ pragma solidity ^0.8.0;
 
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
-import {IPlatformToken} from "../interface/IPlatformToken.sol";
-import {IVaultGateway, SupportTokensToOpenInfo} from "../interface/IVaultGateway.sol";
+import {IUtopiaToken} from "../interface/IUtopiaToken.sol";
+import {IVaultGateway} from "../interface/IVaultGateway.sol";
 import {IWeth} from "../interface/IWeth.sol";
+import {IRouter} from "../interface/IRouter.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {IERC721MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/IERC721MetadataUpgradeable.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 
-// WBTC/WETH/LINK... Router
-contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    uint256 private longFactor1_; // A1 / P1 + ... + An / Pn
-    uint256 private longFactor2_; // A1+A2+..+An
-    uint256 private shortFactor1_; // A1 / P1 + ... + An / Pn
-    uint256 private shortFactor2_; // A1+A2+.._An
+struct SupportTokenInfo {
+    bool _enabled;
+    address _collateralToken;
+    uint256 _collateralRate; // ?/10000
+    uint256 _longFactor1; // A1 / P1 + ... + An / Pn
+    uint256 _longPosSizeTotal; // A1+A2+..+An
+    uint256 _shortFactor1; // A1 / P1 + ... + An / Pn
+    uint256 _shortPosSizeTotal; // A1+A2+.._An
+    uint256 _rolloverFeePerBlock;
+    uint256 _openPositionFeeRate; // ?/10000
+    uint256 _minPositionSize;
+    uint256 _maxPositionSize;
+}
+
+struct Position {
+    uint256 _openPrice;
+    address _collateralToken;
+    uint256 _collateralAmount; // amount of collateral
+    uint256 _positionSize; // _collateralAmount * leverage
+    bool _isLong;
+}
+
+// BTC/USD or ETH/USD or ... Router
+contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
+    event IncreasePosition(
+        address _user,
+        address _collateralToken,
+        uint256 _collateralTokenAmount,
+        uint256 _leverage,
+        bool _isLong
+    );
+
+    event DecreasePosition(
+        address _user,
+        address _collateralToken,
+        uint256 _collateralTokenAmount,
+        uint256 _leverage,
+        bool _isLong
+    );
+
+    address[] public supportTokens;
+    mapping(address => SupportTokenInfo) public supportTokenInfos; // _collateralToken => SupportTokenInfo
+
     IPriceOracleGetter public priceOracle;
-    address public token;
-    
-    mapping(address => Position) public positions;
+    address public tradePairToken; // BTC/ETH/...
+
+    mapping(address => mapping(address => Position)) public positions; // user => (_collateralToken => Position)
     IVaultGateway public vaultGateway;
     address public weth;
-    IPlatformToken public platformToken;
-    uint256 public FACTOR_MULTIPLIER;
-    uint256 public openPositionFeeRate; // ?/10000
     address public foundation;
-    uint256 public nftDiscount; // ?/10000
-    IERC721MetadataUpgradeable public nft;
-    uint256 public minPositionSizeUsd;
-    uint256 public maxPositionSizeUsdRate; // ?/10000 of vault usd
-
-    struct Position {
-        uint256 _openPrice;
-        address _collateralToken;
-        uint256 _collateralAmount; // amount of collateral
-        uint256 _platformTokenAmount; // position size. closed pos will be 0
-        bool _isLong;
-    }
+    uint256 public constant FACTOR_MULTIPLIER = 10 ** 18;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "VaultGateway::onlyEOA:: not eoa");
@@ -47,342 +71,333 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable {
 
     function initialize(
         address _priceOracle,
-        address _token,
+        address _tradePairToken,
         address _vaultGateway,
         address _weth,
-        address _platformToken,
-        uint256 _openPositionFeeRate,
         address _foundation,
-        address _nft,
-        uint256 _nftDiscount,
-        uint256 _minPositionSizeUsd,
-        uint256 _maxPositionSizeUsdRate
+        SupportTokenInfo[] memory _supportTokenInfos
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
 
         priceOracle = IPriceOracleGetter(_priceOracle);
-        token = _token;
+        tradePairToken = _tradePairToken;
         vaultGateway = IVaultGateway(_vaultGateway);
         weth = _weth;
-        platformToken = IPlatformToken(_platformToken);
-        FACTOR_MULTIPLIER = 10 ** 18;
-        openPositionFeeRate = _openPositionFeeRate;
         foundation = _foundation;
-        nft = IERC721MetadataUpgradeable(_nft);
-        nftDiscount = _nftDiscount;
-        minPositionSizeUsd = _minPositionSizeUsd;
-        maxPositionSizeUsdRate = _maxPositionSizeUsdRate;
-    }
-
-    // amount of platform token by long
-    function totalLongFloat() external view returns (uint256, bool) {
-        uint256 _tokenPrice = priceOracle.getAssetPrice(token);
-        require(_tokenPrice > 0, "Router::totalLongFloat: bad token price");
-        if (_tokenPrice * longFactor1_ > longFactor2_) {
-            return (
-                (_tokenPrice * longFactor1_ - longFactor2_) / FACTOR_MULTIPLIER,
-                true
-            );
-        } else {
-            return (
-                (longFactor2_ - _tokenPrice * longFactor1_) / FACTOR_MULTIPLIER,
-                false
-            );
+        for (uint256 i = 0; i < _supportTokenInfos.length; i++) {
+            supportTokenInfos[
+                _supportTokenInfos[i]._collateralToken
+            ] = _supportTokenInfos[i];
+            supportTokens.push(_supportTokenInfos[i]._collateralToken);
         }
     }
 
-    // amount of platform token by short
-    function totalShortFloat() external view returns (uint256, bool) {
-        uint256 _tokenPrice = priceOracle.getAssetPrice(token);
-        require(_tokenPrice > 0, "Router::totalShortFloat: bad token price");
-        if (shortFactor2_ > _tokenPrice * shortFactor1_) {
-            return (
-                (shortFactor2_ - _tokenPrice * shortFactor1_) /
-                    FACTOR_MULTIPLIER,
-                true
+    // long float usd amount
+    function totalLongFloat() public view returns (int256) {
+        int256 result;
+        for (uint256 i = 0; i < supportTokens.length; i++) {
+            SupportTokenInfo memory _supportTokenInfo = supportTokenInfos[
+                supportTokens[i]
+            ];
+            uint256 _tradePairTokenPrice = priceOracle.getAssetPrice(
+                tradePairToken
             );
-        } else {
-            return (
-                (_tokenPrice * shortFactor1_ - shortFactor2_) /
-                    FACTOR_MULTIPLIER,
-                false
+            require(
+                _tradePairTokenPrice > 0,
+                "Router::totalLongFloat: bad _tradePairTokenPrice price"
             );
+            uint256 _a = _tradePairTokenPrice * _supportTokenInfo._longFactor1;
+            uint256 _b = _supportTokenInfo._longPosSizeTotal;
+            if (_a >= _b) {
+                result = result + int256(_a - _b);
+            } else {
+                result = result - int256(_b - _a);
+            }
         }
+        return result;
     }
 
-    function _getNftDiscount() private view returns (uint256) {
-        if (nft.balanceOf(msg.sender) == 0) {
-            return 10000;
-        } else {
-            return nftDiscount;
+    // short float usd amount
+    function totalShortFloat() public view returns (int256) {
+        int256 result;
+        for (uint256 i = 0; i < supportTokens.length; i++) {
+            SupportTokenInfo memory _supportTokenInfo = supportTokenInfos[
+                supportTokens[i]
+            ];
+            uint256 _tradePairTokenPrice = priceOracle.getAssetPrice(
+                tradePairToken
+            );
+            require(
+                _tradePairTokenPrice > 0,
+                "Router::totalShortFloat: bad _tradePairTokenPrice price"
+            );
+            uint256 _a = _tradePairTokenPrice * _supportTokenInfo._shortFactor1;
+            uint256 _b = _supportTokenInfo._shortPosSizeTotal;
+            if (_a >= _b) {
+                result = result + int256(_a - _b);
+            } else {
+                result = result - int256(_b - _a);
+            }
         }
+        return result;
     }
 
-    function openPosition(
+    // float usd amount
+    function totalFloat() external view returns (int256) {
+        return totalLongFloat() + totalShortFloat();
+    }
+
+    function increasePosition(
         address _collateralToken,
-        uint256 _platformTokenAmount,
+        uint256 _collateralTokenAmount,
+        uint256 _leverage,
         bool _isLong,
         uint256 _minOrMaxPrice
     ) external payable onlyEOA nonReentrant {
-        if (_collateralToken == address(0)) {
-            require(msg.value > 0, "Router::openPosition: bad msg.value");
-            IWeth(weth).depositTo{value: msg.value}(msg.sender);
-            _collateralToken = weth;
-        }
-        SupportTokensToOpenInfo memory _info = vaultGateway.supportTokensToOpen(_collateralToken);
+        // check _collateralToken
         require(
-            _info._token != address(0),
-            "Router::openPosition: not support this token"
+            supportTokenInfos[_collateralToken]._enabled,
+            "Router::increasePosition: not support this token"
         );
-        uint256 _tokenPrice = priceOracle.getAssetPrice(token);
-        require(_tokenPrice > 0, "Router::openPosition: bad token price");
-        uint256 _collateralPrice = priceOracle.getAssetPrice(_collateralToken);
+        uint256 _tradePairTokenPrice = priceOracle.getAssetPrice(
+            tradePairToken
+        );
         require(
-            _collateralPrice > 0,
-            "Router::openPosition: bad _collateralPrice price"
+            _tradePairTokenPrice > 0,
+            "Router::increasePosition: bad _tradePairTokenPrice price"
         );
+
+        SupportTokenInfo storage _info = supportTokenInfos[_collateralToken];
         // transfer in _collateralToken
-        uint256 _platformTokenPrice = vaultGateway.platformTokenPrice();
-        require(
-            _platformTokenPrice > 0,
-            "Router::openPosition: bad _platformTokenPrice price"
-        );
-        uint256 _needCollateralAmount = (_platformTokenPrice *
-            _platformTokenAmount *
-            (10 ** IERC20MetadataUpgradeable(_collateralToken).decimals())) /
-            (_collateralPrice * (10 ** 8));
-        uint256 _needCollateralFee = (_needCollateralAmount *
-            openPositionFeeRate *
-            _getNftDiscount()) /
-            10000 /
-            10000;
         SafeToken.safeTransferFrom(
             _collateralToken,
             msg.sender,
             address(this),
-            _needCollateralAmount
-        );
-        SafeToken.safeTransferFrom(
-            _collateralToken,
-            msg.sender,
-            foundation,
-            _needCollateralFee
+            _collateralTokenAmount
         );
         // check slippage and modify factors
+        uint256 _positionSize = _collateralTokenAmount * _leverage;
         if (_isLong) {
             require(
-                _tokenPrice <= _minOrMaxPrice,
-                "Router::openPosition: can not be larger than _minOrMaxPrice"
+                _tradePairTokenPrice <= _minOrMaxPrice,
+                "Router::increasePosition: can not be larger than _minOrMaxPrice"
             );
-            longFactor1_ =
-                longFactor1_ +
-                (_platformTokenAmount * (10 ** 8) * FACTOR_MULTIPLIER) /
-                (_tokenPrice *
+            _info._longFactor1 =
+                _info._longFactor1 +
+                (_positionSize * (10 ** 8) * FACTOR_MULTIPLIER) /
+                (_tradePairTokenPrice *
                     (10 **
-                        IERC20MetadataUpgradeable(platformToken).decimals()));
-            longFactor2_ =
-                (longFactor2_ + _platformTokenAmount) *
+                        IERC20MetadataUpgradeable(_collateralToken)
+                            .decimals()));
+            _info._longPosSizeTotal =
+                _info._longPosSizeTotal +
+                _positionSize *
                 FACTOR_MULTIPLIER;
         } else {
             require(
-                _tokenPrice >= _minOrMaxPrice,
-                "Router::openPosition: must be larger than _minOrMaxPrice"
+                _tradePairTokenPrice >= _minOrMaxPrice,
+                "Router::increasePosition: must be larger than _minOrMaxPrice"
             );
-            shortFactor1_ =
-                shortFactor1_ +
-                (_platformTokenAmount * (10 ** 8) * FACTOR_MULTIPLIER) /
-                (_tokenPrice *
+            _info._shortFactor1 =
+                _info._shortFactor1 +
+                (_positionSize * (10 ** 8) * FACTOR_MULTIPLIER) /
+                (_tradePairTokenPrice *
                     (10 **
-                        IERC20MetadataUpgradeable(platformToken).decimals()));
-            shortFactor2_ =
-                (shortFactor2_ + _platformTokenAmount) *
+                        IERC20MetadataUpgradeable(_collateralToken)
+                            .decimals()));
+            _info._shortPosSizeTotal =
+                _info._shortPosSizeTotal +
+                _positionSize *
                 FACTOR_MULTIPLIER;
         }
 
         // save position
-        Position storage pos = positions[msg.sender];
-        if (pos._platformTokenAmount == 0) {
-            pos._openPrice = _tokenPrice;
-            pos._platformTokenAmount = _platformTokenAmount;
+        Position storage pos = positions[msg.sender][_collateralToken];
+        if (pos._positionSize == 0) {
+            pos._openPrice = _tradePairTokenPrice;
             pos._collateralToken = _collateralToken;
-            pos._collateralAmount = _needCollateralAmount;
+            pos._collateralAmount = _collateralTokenAmount;
+            pos._positionSize = _positionSize;
             pos._isLong = _isLong;
-            _checkPositionSize(pos, _platformTokenPrice);
         } else {
-            if ((pos._isLong && _isLong) || (!pos._isLong && !_isLong)) {
-                // combine pos
-                pos._openPrice =
-                    (pos._openPrice *
-                        _tokenPrice *
-                        (pos._platformTokenAmount + _platformTokenAmount)) /
-                    (pos._openPrice *
-                        _platformTokenAmount +
-                        _tokenPrice *
-                        pos._platformTokenAmount);
-                pos._platformTokenAmount =
-                    pos._platformTokenAmount +
-                    _platformTokenAmount;
-                pos._collateralAmount =
-                    pos._collateralAmount +
-                    _needCollateralAmount;
-            } else {
-                _closePosition(
-                    msg.sender,
-                    _platformTokenAmount,
-                    _tokenPrice,
-                    _platformTokenPrice,
-                    _collateralPrice,
-                    _needCollateralAmount
-                );
-            }
+            // check direction
+            require(
+                pos._isLong == _isLong,
+                "Router::increasePosition: should not increase position"
+            );
+            // combine pos
+            pos._openPrice =
+                (pos._openPrice *
+                    _tradePairTokenPrice *
+                    (pos._positionSize + _positionSize)) /
+                (pos._openPrice *
+                    _positionSize +
+                    _tradePairTokenPrice *
+                    pos._positionSize);
+            pos._positionSize = pos._positionSize + _positionSize;
+            pos._collateralAmount =
+                pos._collateralAmount +
+                _collateralTokenAmount;
         }
+        emit IncreasePosition(
+            msg.sender,
+            _collateralToken,
+            _collateralTokenAmount,
+            _leverage,
+            _isLong
+        );
+    }
+
+    function decreasePosition(
+        address _collateralToken,
+        uint256 _collateralTokenAmount,
+        uint256 _leverage,
+        bool _isLong,
+        uint256 _minOrMaxPrice
+    ) external payable onlyEOA nonReentrant {
+        // check _collateralToken
+        require(
+            supportTokenInfos[_collateralToken]._enabled,
+            "Router::decreasePosition: not support this token"
+        );
+
+        SupportTokenInfo storage _info = supportTokenInfos[_collateralToken];
+        // transfer in _collateralToken
+        SafeToken.safeTransferFrom(
+            _collateralToken,
+            msg.sender,
+            address(this),
+            _collateralTokenAmount
+        );
+        // check slippage and modify factors
+        uint256 _tradePairTokenPrice = priceOracle.getAssetPrice(
+            tradePairToken
+        );
+        require(
+            _tradePairTokenPrice > 0,
+            "Router::decreasePosition: bad _tradePairTokenPrice price"
+        );
+        uint256 _positionSize = _collateralTokenAmount * _leverage;
+        if (_isLong) {
+            require(
+                _tradePairTokenPrice <= _minOrMaxPrice,
+                "Router::decreasePosition: can not be larger than _minOrMaxPrice"
+            );
+            _info._longFactor1 =
+                _info._longFactor1 +
+                (_positionSize * (10 ** 8) * FACTOR_MULTIPLIER) /
+                (_tradePairTokenPrice *
+                    (10 **
+                        IERC20MetadataUpgradeable(_collateralToken)
+                            .decimals()));
+            _info._longPosSizeTotal =
+                _info._longPosSizeTotal +
+                _positionSize *
+                FACTOR_MULTIPLIER;
+        } else {
+            require(
+                _tradePairTokenPrice >= _minOrMaxPrice,
+                "Router::decreasePosition: must be larger than _minOrMaxPrice"
+            );
+            _info._shortFactor1 =
+                _info._shortFactor1 +
+                (_positionSize * (10 ** 8) * FACTOR_MULTIPLIER) /
+                (_tradePairTokenPrice *
+                    (10 **
+                        IERC20MetadataUpgradeable(_collateralToken)
+                            .decimals()));
+            _info._shortPosSizeTotal =
+                _info._shortPosSizeTotal +
+                _positionSize *
+                FACTOR_MULTIPLIER;
+        }
+
+        // save position
+        Position storage pos = positions[msg.sender][_collateralToken];
+        require(
+            pos._collateralAmount > 0,
+            "Router::decreasePosition: bad _collateralAmount"
+        );
+        // check direction
+        require(
+            pos._isLong == !_isLong,
+            "Router::decreasePosition: should not decrease position"
+        );
+        // close part of pos and update pos
+        bool _isReverse = _positionSize >= pos._positionSize;
+        if (_isReverse) {
+            uint256 _remainCollateralAmount = _closePosition(_collateralToken, _positionSize - pos._positionSize, _tradePairTokenPrice);
+            pos._collateralAmount = _remainCollateralAmount;
+            pos._openPrice = _tradePairTokenPrice;
+            pos._positionSize = _positionSize - pos._positionSize;
+            pos._isLong = _isLong;
+        } else {
+            uint256 _remainCollateralAmount = _closePosition(_collateralToken, pos._positionSize - _positionSize, _tradePairTokenPrice);
+            pos._collateralAmount = _remainCollateralAmount;
+            pos._positionSize = pos._positionSize - _positionSize;
+        }
+        emit DecreasePosition(
+            msg.sender,
+            _collateralToken,
+            _collateralTokenAmount,
+            _leverage,
+            _isLong
+        );
     }
 
     function _closePosition(
-        address _addr,
-        uint256 _platformTokenAmount,
-        uint256 _tokenPrice,
-        uint256 _platformTokenPrice,
-        uint256 _collateralPrice,
-        uint256 _collateralAmount
-    ) private {
-        Position storage pos = positions[_addr];
-        pos._collateralAmount = pos._collateralAmount + _collateralAmount;
-        uint256 _needClosePlatformTokenAmount = 0;
-        if (pos._platformTokenAmount >= _platformTokenAmount) {
-            _needClosePlatformTokenAmount = _platformTokenAmount;
-        } else {
-            _needClosePlatformTokenAmount = pos._platformTokenAmount;
-            pos._isLong = !pos._isLong;
-            pos._openPrice = _tokenPrice;
-        }
-        pos._platformTokenAmount =
-            pos._platformTokenAmount -
-            _needClosePlatformTokenAmount;
-        uint256 _profit = 0;
-        uint256 _loss = 0;
+        address _collateralToken,
+        uint256 _needClosePositionSize,
+        uint256 _tradePairTokenPrice
+    ) private returns (uint256) {
+        Position storage pos = positions[msg.sender][_collateralToken];
+        require(
+            pos._positionSize >= _needClosePositionSize,
+            "Router::_closePosition: target position size nou enough"
+        );
+
+        uint256 _needPoccessCollateralTokenAmount = (_needClosePositionSize *
+            pos._collateralAmount) / pos._positionSize;
+
+        int256 _profit = 0;
         if (pos._isLong) {
-            if (_tokenPrice >= pos._openPrice) {
-                _profit =
-                    (_tokenPrice * _needClosePlatformTokenAmount) /
-                    pos._openPrice -
-                    _needClosePlatformTokenAmount;
-            } else {
-                _loss =
-                    _needClosePlatformTokenAmount -
-                    (_tokenPrice * _needClosePlatformTokenAmount) /
-                    pos._openPrice;
-            }
+            _profit =
+                int256(
+                    (_tradePairTokenPrice * _needPoccessCollateralTokenAmount) /
+                        pos._openPrice
+                ) -
+                int256(_needPoccessCollateralTokenAmount);
         } else {
-            if (pos._openPrice >= _tokenPrice) {
-                _profit =
-                    _needClosePlatformTokenAmount -
-                    (_tokenPrice * _needClosePlatformTokenAmount) /
-                    pos._openPrice;
-            } else {
-                _loss =
-                    (_tokenPrice * _needClosePlatformTokenAmount) /
-                    pos._openPrice -
-                    _needClosePlatformTokenAmount;
-            }
+            _profit =
+                int256(_needPoccessCollateralTokenAmount) -
+                int256(
+                    (_tradePairTokenPrice * _needPoccessCollateralTokenAmount) /
+                        pos._openPrice
+                );
         }
 
-        if (_profit > 0) {
-            vaultGateway.mintPlatformToken(msg.sender, _profit);
-        } else if (_loss > 0) {
-            uint256 _needCollateralAmount = (_platformTokenPrice *
-                _loss *
-                (10 **
-                    IERC20MetadataUpgradeable(pos._collateralToken)
-                        .decimals())) / (_collateralPrice * (10 ** 8));
-            require(
-                pos._collateralAmount >= _needCollateralAmount,
-                "Router::_closePosition: collateral is not enough"
-            );
-            pos._collateralAmount =
-                pos._collateralAmount -
-                _needCollateralAmount;
-            IERC20MetadataUpgradeable(pos._collateralToken).approve(
-                address(vaultGateway),
-                _needCollateralAmount
-            );
-            vaultGateway.receiveLoss(
-                pos._collateralToken,
-                _needCollateralAmount
-            );
-        }
-
-        // refund _collateralAmount if position size is 0
-        if (pos._platformTokenAmount == 0) {
+        if (_profit >= 0) {
             SafeToken.safeTransfer(
                 pos._collateralToken,
                 msg.sender,
-                pos._collateralAmount
+                _needPoccessCollateralTokenAmount
             );
+            vaultGateway.sendProfit(
+                msg.sender,
+                pos._collateralToken,
+                uint256(_profit)
+            );
+            
         } else {
-            _checkPositionSize(pos, _platformTokenPrice);
-        }
-    }
-
-    function maxPositionSizeUsd() public view returns (uint256) {
-        return vaultGateway.reserveTotal() * maxPositionSizeUsdRate / 10000;
-    }
-
-    function _checkPositionSize(
-        Position memory _pos,
-        uint256 _platformTokenPrice
-    ) private view {
-        uint256 _usd = (_platformTokenPrice * _pos._platformTokenAmount) /
-            (10 ** platformToken.decimals());
-        require(
-            _usd >= minPositionSizeUsd,
-            "Router::_closePosition: pos size is too small"
-        );
-        require(
-            _usd <= maxPositionSizeUsd(),
-            "Router::_closePosition: pos size is too large"
-        );
-    }
-
-    function closePosition(
-        uint256 _minOrMaxPrice
-    ) external onlyEOA nonReentrant {
-        Position storage pos = positions[msg.sender];
-        require(pos._platformTokenAmount > 0, "Router::closePosition: bad pos");
-        uint256 _tokenPrice = priceOracle.getAssetPrice(token);
-        require(_tokenPrice > 0, "Router::closePosition: bad token price");
-        uint256 _collateralPrice = priceOracle.getAssetPrice(
-            pos._collateralToken
-        );
-        require(
-            _collateralPrice > 0,
-            "Router::closePosition: bad _collateralPrice price"
-        );
-        // transfer in _collateralToken
-        uint256 _platformTokenPrice = vaultGateway.platformTokenPrice();
-        require(
-            _platformTokenPrice > 0,
-            "Router::closePosition: bad _platformTokenPrice price"
-        );
-        if (!pos._isLong) {
-            require(
-                _tokenPrice <= _minOrMaxPrice,
-                "Router::closePosition: can not be larger than _minOrMaxPrice"
+            SafeToken.safeTransfer(
+                pos._collateralToken,
+                msg.sender,
+                _needPoccessCollateralTokenAmount - uint256(-_profit)
             );
-        } else {
-            require(
-                _tokenPrice >= _minOrMaxPrice,
-                "Router::closePosition: must be larger than _minOrMaxPrice"
-            );
+            vaultGateway.receiveLoss(pos._collateralToken, uint256(-_profit));
         }
-        _closePosition(
-            msg.sender,
-            pos._platformTokenAmount,
-            _tokenPrice,
-            _platformTokenPrice,
-            _collateralPrice,
-            0
-        );
+
+        return pos._collateralAmount - _needPoccessCollateralTokenAmount;
     }
 }

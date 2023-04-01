@@ -3,17 +3,21 @@ pragma solidity ^0.8.0;
 
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
-import {IPlatformToken} from "../interface/IPlatformToken.sol";
+import {IUtopiaToken} from "../interface/IUtopiaToken.sol";
 import {IUniswapUtil} from "../interface/IUniswapUtil.sol";
-import {IVaultGateway, SupportTokensToOpenInfo} from "../interface/IVaultGateway.sol";
+import {IVaultGateway} from "../interface/IVaultGateway.sol";
 import {IRouter} from "../interface/IRouter.sol";
+import {IWeth} from "../interface/IWeth.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {IERC721MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/IERC721MetadataUpgradeable.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 
-
-contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
+contract VaultGateway is
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable,
+    IVaultGateway
+{
     event Mint(
         address indexed _user,
         address indexed _tokenToMint,
@@ -23,23 +27,25 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     event Redeem(
         address indexed _user,
         address indexed _tokenToRedeem,
-        uint256 _platformTokenAmount,
-        uint256 _redeemedAmount
+        uint256 _utopiaTokenAmount,
+        uint256 _redeemedAmount,
+        uint256 _redeemFee
     );
 
     IPriceOracleGetter public priceOracle;
-    uint256 public initialMintRightPerNft; // platformToken
-    mapping(uint256 => uint256) public usedMintRight; // tokenId => platformToken
+    uint256 public initialMintRightPerNft; // utopiaToken
+    mapping(uint256 => uint256) public usedMintRight; // tokenId => utopiaToken
     IERC721MetadataUpgradeable public nft;
     mapping(address => bool) public supportTokensToMint;
-    IPlatformToken public platformToken;
+    IUtopiaToken public utopiaToken;
     mapping(address => bool) public supportTokensToRedeem;
     address public usdtAddr;
     uint256 public defaultSlippage; // ?/10000
     IUniswapUtil public uniswapUtil;
     address public weth;
     IRouter[] public routers;
-    mapping(address => SupportTokensToOpenInfo) public supportTokensToOpen;
+    uint256 public redeemFeeRate; // ?/10000
+    uint256 public redeemableTime;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "VaultGateway::onlyEOA:: not eoa");
@@ -63,12 +69,12 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         address _nft,
         address[] memory _supportTokensToMint,
         address[] memory _supportTokensToRedeem,
-        address _platformToken,
+        address _utopiaToken,
         address _usdtAddr,
         uint256 _defaultSlippage,
         address _uniswapUtilAddr,
         address _weth,
-        SupportTokensToOpenInfo[] memory _supportTokensToOpen
+        uint256 _redeemFeeRate
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
@@ -82,27 +88,123 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         for (uint256 i = 0; i < _supportTokensToRedeem.length; i++) {
             supportTokensToRedeem[_supportTokensToRedeem[i]] = true;
         }
-        platformToken = IPlatformToken(_platformToken);
+        utopiaToken = IUtopiaToken(_utopiaToken);
         usdtAddr = _usdtAddr;
         defaultSlippage = _defaultSlippage;
         uniswapUtil = IUniswapUtil(_uniswapUtilAddr);
         weth = _weth;
-        for (uint256 i = 0; i < _supportTokensToOpen.length; i++) {
-            supportTokensToOpen[
-                _supportTokensToOpen[i]._token
-            ] = _supportTokensToOpen[i];
-        }
+        redeemFeeRate = _redeemFeeRate;
+        redeemableTime = block.timestamp;
+    }
+
+    function changeRedeemFeeRate(uint256 _redeemFeeRate) external onlyOwner {
+        redeemFeeRate = _redeemFeeRate;
+    }
+
+    function changeRedeemableTime(uint256 _redeemableTime) external onlyOwner {
+        redeemableTime = _redeemableTime;
     }
 
     function addRouter(address _router) external onlyOwner {
         routers.push(IRouter(_router));
     }
 
-    // USDT/USDC/ETH/ARB
+    function mintByNftETH(
+        uint256 _tokenId,
+        uint256 _utopiaTokenAmount,
+        uint256 _slippage
+    ) external payable onlyEOA nonReentrant {
+        // verify nft owner
+        require(
+            nft.ownerOf(_tokenId) == msg.sender,
+            "VaultGateway::mintByNftETH: must have this nft"
+        );
+
+        address _tokenToMint = weth;
+        require(
+            supportTokensToMint[_tokenToMint],
+            "VaultGateway::mintByNftETH: not support this token"
+        );
+        uint256 _tokenToMintPrice = priceOracle.getAssetPrice(_tokenToMint);
+        require(
+            _tokenToMintPrice > 0,
+            "VaultGateway::mintByNftETH: bad _tokenToMintPrice price"
+        );
+        uint256 _utopiaTokenPrice = _calcUtopiaTokenPrice();
+        require(
+            _utopiaTokenPrice > 0,
+            "VaultGateway::mintByNftETH: bad _utopiaTokenPrice price"
+        );
+        uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
+        require(
+            _usdtPrice > 0,
+            "VaultGateway::mintByNftETH: bad _usdtPrice price"
+        );
+        uint256 _needUsd = (_utopiaTokenAmount * _utopiaTokenPrice) /
+            (10 ** IERC20MetadataUpgradeable(utopiaToken).decimals());
+        uint256 _needUsdt = (_needUsd *
+            (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals())) /
+            _usdtPrice;
+        uint256 _needTokenToMintAmount = (_needUsd *
+            (10 ** IERC20MetadataUpgradeable(_tokenToMint).decimals())) /
+            _tokenToMintPrice;
+        uint256 __slippage = _slippage;
+        if (__slippage == 0) {
+            __slippage = defaultSlippage;
+        }
+        uint256 _amountInMaximum = _needTokenToMintAmount +
+            (_needTokenToMintAmount * __slippage * 2) /
+            10000 +
+            (_needTokenToMintAmount * 30 * 2) /
+            10000;
+        require(
+            msg.value >= _amountInMaximum,
+            "VaultGateway::mintByNftETH: not enough msg.value"
+        );
+
+        IWeth(weth).deposit{value: msg.value}();
+        SafeToken.safeApprove(
+            _tokenToMint,
+            address(uniswapUtil),
+            _amountInMaximum
+        );
+        uint256 _spentTokenToMintAmount = uniswapUtil.swapExactOutput(
+            _needUsdt,
+            _amountInMaximum,
+            _tokenToMint,
+            usdtAddr,
+            3000
+        );
+        IWeth(weth).withdrawTo(msg.sender, msg.value - _spentTokenToMintAmount);
+
+        // verify nft usd mint right and mint
+        require(
+            _utopiaTokenAmount <= remainMintRight(_tokenId),
+            "VaultGateway::mintByNft: mint right of nft is not enough"
+        );
+        usedMintRight[_tokenId] = usedMintRight[_tokenId] + _utopiaTokenAmount;
+        utopiaToken.mint(msg.sender, _utopiaTokenAmount);
+        // emit event
+        emit Mint(
+            msg.sender,
+            address(0),
+            _spentTokenToMintAmount,
+            _utopiaTokenAmount
+        );
+    }
+
+    function remainMintRight(uint256 _tokenId) public view returns (uint256) {
+        uint256 _remainMintRight = initialMintRightPerNft;
+        if (usedMintRight[_tokenId] != 0) {
+            _remainMintRight = initialMintRightPerNft - usedMintRight[_tokenId];
+        }
+        return _remainMintRight;
+    }
+
     function mintByNft(
         uint256 _tokenId,
         address _tokenToMint,
-        uint256 _tokenToMintAmount,
+        uint256 _utopiaTokenAmount,
         uint256 _slippage
     ) external payable onlyEOA nonReentrant {
         // verify nft owner
@@ -111,102 +213,174 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             "VaultGateway::mintByNft: must have this nft"
         );
         // verify token to mint
-        uint256 _receivedUsdt = 0;
+        uint256 _spentTokenToMintAmount = 0;
         {
             require(
-                _tokenToMint == address(0) || supportTokensToMint[_tokenToMint],
+                supportTokensToMint[_tokenToMint],
                 "VaultGateway::mintByNft: not support this token"
             );
             // receive token and swap to usdt
-            uint256 __slippage = _slippage;
-            if (__slippage == 0) {
-                __slippage = defaultSlippage;
-            }
-            address __tokenToMint = _tokenToMint;
-            uint256 _msgValue = 0;
-            if (_tokenToMint == address(0)) {
-                require(
-                    msg.value == _tokenToMintAmount,
-                    "VaultGateway::mintByNft: bad msg.value"
-                );
-                __tokenToMint = weth;
-                _msgValue = _tokenToMintAmount;
-            } else {
+            uint256 _utopiaTokenPrice = _calcUtopiaTokenPrice();
+            require(
+                _utopiaTokenPrice > 0,
+                "VaultGateway::mintByNft: bad _utopiaTokenPrice price"
+            );
+            uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
+            require(
+                _usdtPrice > 0,
+                "VaultGateway::mintByNftETH: bad _usdtPrice price"
+            );
+            uint256 _needUsd = (_utopiaTokenAmount * _utopiaTokenPrice) /
+                (10 ** IERC20MetadataUpgradeable(utopiaToken).decimals());
+            uint256 _needUsdt = (_needUsd *
+                (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals())) /
+                _usdtPrice;
+            uint256 _needTokenToMintAmount;
+            if (_tokenToMint == usdtAddr) {
+                _needTokenToMintAmount =
+                    (_needUsd *
+                        (10 **
+                            IERC20MetadataUpgradeable(_tokenToMint)
+                                .decimals())) /
+                    _usdtPrice;
                 SafeToken.safeTransferFrom(
                     _tokenToMint,
                     msg.sender,
                     address(this),
-                    _tokenToMintAmount
+                    _needTokenToMintAmount
+                );
+            } else {
+                uint256 _tokenToMintPrice = priceOracle.getAssetPrice(
+                    _tokenToMint
+                );
+                require(
+                    _tokenToMintPrice > 0,
+                    "VaultGateway::mintByNft: bad _tokenToMintPrice price"
+                );
+                _needTokenToMintAmount =
+                    (_needUsd *
+                        (10 **
+                            IERC20MetadataUpgradeable(_tokenToMint)
+                                .decimals())) /
+                    _tokenToMintPrice;
+                uint256 __slippage = _slippage;
+                if (__slippage == 0) {
+                    __slippage = defaultSlippage;
+                }
+                uint256 _amountInMaximum = _needTokenToMintAmount +
+                    (_needTokenToMintAmount * __slippage * 2) /
+                    10000 +
+                    (_needTokenToMintAmount * 30 * 2) /
+                    10000;
+                SafeToken.safeTransferFrom(
+                    _tokenToMint,
+                    msg.sender,
+                    address(this),
+                    _amountInMaximum
+                );
+                SafeToken.safeApprove(
+                    _tokenToMint,
+                    address(uniswapUtil),
+                    _amountInMaximum
+                );
+                _spentTokenToMintAmount = uniswapUtil.swapExactOutput(
+                    _needUsdt,
+                    _amountInMaximum,
+                    _tokenToMint,
+                    usdtAddr,
+                    3000
+                );
+                SafeToken.safeTransfer(
+                    _tokenToMint,
+                    msg.sender,
+                    _amountInMaximum - _spentTokenToMintAmount
                 );
             }
-            uint256 _tokenToMintPrice = priceOracle.getAssetPrice(
-                __tokenToMint
-            );
-            uint256 _toUsd = (_tokenToMintAmount * _tokenToMintPrice) /
-                (10 ** IERC20MetadataUpgradeable(__tokenToMint).decimals());
-            uint256 _amountOutMinimum = _toUsd -
-                (_toUsd * __slippage * 2) /
+        }
+        // verify nft usd mint right and mint
+        require(
+            _utopiaTokenAmount <= remainMintRight(_tokenId),
+            "VaultGateway::mintByNft: mint right of nft is not enough"
+        );
+        usedMintRight[_tokenId] = usedMintRight[_tokenId] + _utopiaTokenAmount;
+        utopiaToken.mint(msg.sender, _utopiaTokenAmount);
+        // emit event
+        emit Mint(
+            msg.sender,
+            _tokenToMint,
+            _spentTokenToMintAmount,
+            _utopiaTokenAmount
+        );
+    }
+
+    function utopiaTokenPrice() external view returns (uint256) {
+        return _calcUtopiaTokenPrice();
+    }
+
+    function _toUsdt(address _token, uint256 _tokenAmount) private view returns (uint256) {
+        uint256 _tokenPrice = priceOracle.getAssetPrice(_token);
+        require(
+            _tokenPrice > 0,
+            "VaultGateway::_toUsdt: bad _tokenPrice price"
+        );
+        uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
+        require(
+            _usdtPrice > 0,
+            "VaultGateway::_toUsdt: bad _usdtPrice price"
+        );
+        return _tokenPrice * _tokenAmount * (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals()) / _usdtPrice / 10 ** IERC20MetadataUpgradeable(_token).decimals();
+    }
+
+    function _usdtTo(address _token, uint256 _usdtAmount) private view returns (uint256) {
+        uint256 _tokenPrice = priceOracle.getAssetPrice(_token);
+        require(
+            _tokenPrice > 0,
+            "VaultGateway::_usdtTo: bad _tokenPrice price"
+        );
+        uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
+        require(
+            _usdtPrice > 0,
+            "VaultGateway::_usdtTo: bad _usdtPrice price"
+        );
+        return _usdtPrice * _usdtAmount * (10 ** IERC20MetadataUpgradeable(_token).decimals()) / _tokenPrice / 10 ** IERC20MetadataUpgradeable(usdtAddr).decimals();
+    }
+
+    function sendProfit(
+        address _account,
+        address _token,
+        uint256 _amount
+    ) external onlyRouter {
+        // swap
+        if (_token != usdtAddr) {
+            uint256 _needUsdtAmount = _toUsdt(_token, _amount);
+            uint256 _amountInMaximum = _needUsdtAmount +
+                (_needUsdtAmount * defaultSlippage * 2) /
+                10000 +
+                (_needUsdtAmount * 30 * 2) /
                 10000;
-            _receivedUsdt = uniswapUtil.swapExactInput{value: _msgValue}(
-                _tokenToMintAmount,
-                _amountOutMinimum,
-                _tokenToMint,
+            uniswapUtil.swapExactOutput(
+                _amount,
+                _amountInMaximum,
                 usdtAddr,
+                _token,
                 3000
             );
         }
-        // verify nft usd mint right and mint
-        uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
-        require(_usdtPrice > 0, "VaultGateway::mintByNft: bad usdt price");
-        uint256 _receivedUsd = (_receivedUsdt * _usdtPrice) /
-            (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals());
-
-        uint256 _platformTokenPrice = _calcPlatformTokenPrice();
-        uint256 _mintAmount = (_receivedUsd *
-            (10 ** platformToken.decimals())) / _platformTokenPrice;
-
-        uint256 _remainMintRight = initialMintRightPerNft;
-        if (usedMintRight[_tokenId] != 0) {
-            _remainMintRight = initialMintRightPerNft - usedMintRight[_tokenId];
-        }
-        require(
-            _mintAmount <= _remainMintRight,
-            "VaultGateway::mintByNft: mint right of nft is not enough"
-        );
-        usedMintRight[_tokenId] = usedMintRight[_tokenId] + _mintAmount;
-        platformToken.mint(msg.sender, _mintAmount);
-        // emit event
-        emit Mint(msg.sender, _tokenToMint, _tokenToMintAmount, _mintAmount);
-    }
-
-    function platformTokenPrice() external view returns (uint256) {
-        return _calcPlatformTokenPrice();
-    }
-
-    function mintPlatformToken(
-        address _account,
-        uint256 _amount
-    ) external onlyRouter {
-        platformToken.mint(_account, _amount);
+        // send
+        SafeToken.safeTransfer(_token, _account, _amount);
     }
 
     function receiveLoss(address _token, uint256 _amount) external onlyRouter {
         // fetch token
         SafeToken.safeTransferFrom(_token, msg.sender, address(this), _amount);
         // swap to usdt
-        _swapToUsdt(_token, _amount, defaultSlippage);
-    }
-
-    function _swapToUsdt(
-        address _token,
-        uint256 _amount,
-        uint256 _slippage
-    ) private returns (uint256) {
-        uint256 _tokenPrice = priceOracle.getAssetPrice(_token);
-        uint256 _toUsd = (_amount * _tokenPrice) /
-            (10 ** IERC20MetadataUpgradeable(_token).decimals());
-        uint256 _amountOutMinimum = _toUsd - (_toUsd * _slippage * 2) / 10000;
-        return
+        if (_token != usdtAddr) {
+            uint256 _needUsdtAmount = _toUsdt(_token, _amount);
+            uint256 _amountOutMinimum = _needUsdtAmount -
+                (_needUsdtAmount * defaultSlippage * 2) /
+                10000 -
+                (_needUsdtAmount * 30 * 2) /
+                10000;
             uniswapUtil.swapExactInput(
                 _amount,
                 _amountOutMinimum,
@@ -214,8 +388,10 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
                 usdtAddr,
                 3000
             );
+        }
     }
 
+    // Usd
     function reserveTotal() public view returns (uint256) {
         uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
         require(_usdtPrice > 0, "VaultGateway::reserveTotal: bad usdt price");
@@ -224,76 +400,83 @@ contract VaultGateway is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals());
     }
 
-    function platformTokenTotal() public view returns (uint256) {
-        uint256 _platformTokenTotal = platformToken.totalSupply();
+    // Usd
+    function totalTradePairFloat() public view returns (int256) {
+        int256 result;
         for (uint256 i = 0; i < routers.length; i++) {
-            (uint256 _vLong, bool _bLong) = routers[i].totalLongFloat();
-            if (!_bLong) {
-                _platformTokenTotal = _platformTokenTotal + _vLong;
-            } else {
-                require(
-                    _platformTokenTotal >= _vLong,
-                    "VaultGateway::platformTokenTotal: platformTokenTotal not enough"
-                );
-                _platformTokenTotal = _platformTokenTotal - _vLong;
-            }
-            (uint256 _vShort, bool _bShort) = routers[i].totalShortFloat();
-            if (!_bShort) {
-                _platformTokenTotal = _platformTokenTotal + _vShort;
-            } else {
-                require(
-                    _platformTokenTotal >= _vShort,
-                    "VaultGateway::platformTokenTotal: platformTokenTotal not enough"
-                );
-                _platformTokenTotal = _platformTokenTotal - _vShort;
-            }
+            result = result + routers[i].totalFloat();
         }
-        return _platformTokenTotal;
+        return result;
     }
 
     // usd per platform token
-    function _calcPlatformTokenPrice() private view returns (uint256) {
+    function _calcUtopiaTokenPrice() private view returns (uint256) {
         uint256 _reserveTotal = reserveTotal();
         if (_reserveTotal == 0) {
-            return 100000000;
-        } 
-        return
-            (reserveTotal() * platformToken.decimals()) / platformTokenTotal();
+            uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
+            require(
+                _usdtPrice > 0,
+                "VaultGateway::_calcUtopiaTokenPrice: bad usdt price"
+            );
+            return
+                (1000000 * _usdtPrice) /
+                (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals());
+        }
+        int256 _totalTradePairFloat = totalTradePairFloat();
+        if (_totalTradePairFloat >= 0) {
+            require(
+                _reserveTotal >= uint256(_totalTradePairFloat),
+                "VaultGateway::_calcUtopiaTokenPrice: reserve in pool not enough"
+            );
+            return
+                ((_reserveTotal - uint256(_totalTradePairFloat)) *
+                    (10 ** utopiaToken.decimals())) / utopiaToken.totalSupply();
+        } else {
+            return
+                ((_reserveTotal + uint256(-_totalTradePairFloat)) *
+                    (10 ** utopiaToken.decimals())) / utopiaToken.totalSupply();
+        }
     }
 
     function redeem(
-        uint256 _platformTokenAmount,
+        uint256 _utopiaTokenAmount,
         address _tokenToRedeem
     ) external onlyEOA nonReentrant {
+        // check time
+        require(
+            block.timestamp >= redeemableTime,
+            "VaultGateway::redeem: not touch redeemableTime"
+        );
         // verify token to mint
         require(
             supportTokensToRedeem[_tokenToRedeem],
             "VaultGateway::redeem: not support this token"
         );
+        uint256 _utopiaTokenPrice = _calcUtopiaTokenPrice();
         // burn token
-        platformToken.burn(msg.sender, _platformTokenAmount);
+        utopiaToken.burn(msg.sender, _utopiaTokenAmount);
         // send _tokenToRedeem
-        uint256 _platformTokenPrice = _calcPlatformTokenPrice();
         uint256 _tokenToRedeemPrice = priceOracle.getAssetPrice(_tokenToRedeem);
         require(
             _tokenToRedeemPrice > 0,
             "VaultGateway::redeem: bad token redeem price"
         );
-        uint256 _tokenToRedeemAmount = ((_platformTokenAmount *
-            _platformTokenPrice *
+        uint256 _tokenToRedeemAmount = (_utopiaTokenAmount *
+            _utopiaTokenPrice *
             (10 ** IERC20MetadataUpgradeable(_tokenToRedeem).decimals())) /
-            _tokenToRedeemPrice) * (10 ** platformToken.decimals());
-        SafeToken.safeTransfer(
-            _tokenToRedeem,
-            msg.sender,
-            _tokenToRedeemAmount
-        );
+            _tokenToRedeemPrice /
+            10 ** utopiaToken.decimals();
+
+        uint256 _redeemFee = (redeemFeeRate * redeemFeeRate) / 10000;
+        uint256 _redeemAmount = _tokenToRedeemAmount - _redeemFee;
+        SafeToken.safeTransfer(_tokenToRedeem, msg.sender, _redeemAmount);
         // emit event
         emit Redeem(
             msg.sender,
             _tokenToRedeem,
-            _platformTokenAmount,
-            _tokenToRedeemAmount
+            _utopiaTokenAmount,
+            _redeemAmount,
+            _redeemFee
         );
     }
 }

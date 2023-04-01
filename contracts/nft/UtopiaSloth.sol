@@ -65,8 +65,18 @@ contract UtopiaSloth is
         maxSoldAmount = 5000;
     }
 
+    function setSupportTokensToBuy(address[] memory _supportTokensToBuy) external onlyOwner {
+        for (uint256 i = 0; i < _supportTokensToBuy.length; i++) {
+            supportTokensToBuy[_supportTokensToBuy[i]] = true;
+        }
+    }
+
     function changePricePer(uint256 _pricePer) external onlyOwner {
         pricePer = _pricePer;
+    }
+
+    function changeMaxSoldAmount(uint256 _maxSoldAmount) external onlyOwner {
+        maxSoldAmount = _maxSoldAmount;
     }
 
     function mintByUser(

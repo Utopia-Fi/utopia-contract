@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IWeth} from "../interface/IWeth.sol";
+import {SafeToken} from "../util/SafeToken.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 
@@ -37,7 +37,7 @@ contract UniswapUtil is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             );
             weth.deposit{value: msg.value}();
         } else {
-            TransferHelper.safeTransferFrom(
+            SafeToken.safeTransferFrom(
                 __tokenIn,
                 msg.sender,
                 address(this),
@@ -45,7 +45,7 @@ contract UniswapUtil is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             );
         }
 
-        TransferHelper.safeApprove(__tokenIn, address(swapRouter), _amountIn);
+        SafeToken.safeApprove(__tokenIn, address(swapRouter), _amountIn);
 
         ISwapRouter.ExactInputSingleParams memory params = ISwapRouter
             .ExactInputSingleParams({
@@ -69,14 +69,14 @@ contract UniswapUtil is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         address _tokenOut,
         uint256 _poolFee
     ) external nonReentrant returns (uint256 _amountIn) {
-        TransferHelper.safeTransferFrom(
+        SafeToken.safeTransferFrom(
             _tokenIn,
             msg.sender,
             address(this),
             _amountInMaximum
         );
 
-        TransferHelper.safeApprove(
+        SafeToken.safeApprove(
             _tokenIn,
             address(swapRouter),
             _amountInMaximum
@@ -109,15 +109,15 @@ contract UniswapUtil is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         if (_tokenOut == address(0)) {
             weth.withdrawTo(msg.sender, _tokenOutBalAfter - _tokenOutBalBefore);
         } else {
-            TransferHelper.safeTransfer(
+            SafeToken.safeTransfer(
                 _tokenOut,
                 msg.sender,
                 _tokenOutBalAfter - _tokenOutBalBefore
             );
         }
 
-        TransferHelper.safeApprove(_tokenIn, address(swapRouter), 0);
-        TransferHelper.safeTransfer(
+        SafeToken.safeApprove(_tokenIn, address(swapRouter), 0);
+        SafeToken.safeTransfer(
             _tokenIn,
             msg.sender,
             _amountInMaximum - _amountIn
