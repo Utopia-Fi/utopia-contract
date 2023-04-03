@@ -61,7 +61,6 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
     mapping(address => mapping(address => Position)) public positions; // user => (_collateralToken => Position)
     IVaultGateway public vaultGateway;
     address public weth;
-    address public foundation;
     uint256 public constant FACTOR_MULTIPLIER = 10 ** 18;
 
     modifier onlyEOA() {
@@ -74,7 +73,6 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         address _tradePairToken,
         address _vaultGateway,
         address _weth,
-        address _foundation,
         SupportTokenInfo[] memory _supportTokenInfos
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
@@ -84,7 +82,6 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         tradePairToken = _tradePairToken;
         vaultGateway = IVaultGateway(_vaultGateway);
         weth = _weth;
-        foundation = _foundation;
         for (uint256 i = 0; i < _supportTokenInfos.length; i++) {
             supportTokenInfos[
                 _supportTokenInfos[i]._collateralToken

@@ -34,6 +34,8 @@ contract UtopiaSloth is
     address payable public foundation;
     uint256 public maxSoldAmount;
     uint256 public soldAmount;
+    bool public isPausedSell;
+    bool public isPausedTransfer;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "UtopiaSloth::onlyEOA: not eoa");
@@ -79,12 +81,73 @@ contract UtopiaSloth is
         maxSoldAmount = _maxSoldAmount;
     }
 
+    function pauseSell() external onlyOwner {
+        isPausedSell = true;
+    }
+
+    function startSell() external onlyOwner {
+        isPausedSell = false;
+    }
+
+    function pauseTransfer() external onlyOwner {
+        isPausedTransfer = true;
+    }
+
+    function startTransfer() external onlyOwner {
+        isPausedTransfer = false;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) public virtual override {
+        require(
+            !isPausedTransfer,
+            "UtopiaSloth::transferFrom: paused"
+        );
+        _transfer(from, to, tokenId);
+    }
+
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) public virtual override {
+        require(
+            !isPausedTransfer,
+            "UtopiaSloth::safeTransferFrom: paused"
+        );
+        safeTransferFrom(from, to, tokenId, "");
+    }
+
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes memory _data
+    ) public virtual override {
+        require(
+            !isPausedTransfer,
+            "UtopiaSloth::safeTransferFrom: paused"
+        );
+        _transfer(from, to, tokenId);
+        require(
+            _checkOnERC721Received(from, to, tokenId, _data),
+            "BaseERC721: transfer to non ERC721Receiver implementer"
+        );
+    }
+
     function mintByUser(
         uint256 _amount,
         address _tokenToBuy,
-        uint256 _walletType,  // 0 metamask, 1 okx wallet
+        uint256 _walletType,
         address _inviter
     ) external payable onlyEOA nonReentrant {
+        require(
+            !isPausedSell,
+            "UtopiaSloth::mintByUser: paused"
+        );
         require(
             pricePer > 0,
             "UtopiaSloth::mintByUser: price must larger than 0"
@@ -149,7 +212,7 @@ contract UtopiaSloth is
 
     function tokenURI(
         uint256 tokenId
-    ) public view virtual override returns (string memory) {
+    ) public view override returns (string memory) {
         if (_exists(tokenId)) {
             return
                 string(abi.encodePacked(baseURI, tokenId.toString(), ".json"));

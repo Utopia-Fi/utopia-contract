@@ -12,6 +12,7 @@
     "@openzeppelin/contracts-upgradeable": "^4.8.2",
     "@openzeppelin/hardhat-upgrades": "^1.22.1",
     "@pefish/js-node-assist": "^2.0.8",
+    "@pefish/js-util-file": "^0.0.5",
     "@uniswap/v3-periphery": "^1.4.3"
   }
 }

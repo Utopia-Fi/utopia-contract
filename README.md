@@ -10,6 +10,6 @@ npx hardhat compile
 npx hardhat test
 REPORT_GAS=true npx hardhat test
 npx hardhat node
-ENV=local PKEY=** npx hardhat run scripts/deploy.ts
+ENV=local PKEY=** npx hardhat run --network arbitrum_prod scripts/deploy.ts
 npx hardhat flatten contracts/token/PBC.sol > flatten/token.sol
 ```

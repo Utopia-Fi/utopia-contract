@@ -312,7 +312,7 @@ contract BaseERC721 is
         address from,
         address to,
         uint256 tokenId
-    ) public override {
+    ) public virtual override {
         _transfer(from, to, tokenId);
     }
 
@@ -323,7 +323,7 @@ contract BaseERC721 is
         address from,
         address to,
         uint256 tokenId
-    ) public override {
+    ) public virtual override {
         safeTransferFrom(from, to, tokenId, "");
     }
 
@@ -335,7 +335,7 @@ contract BaseERC721 is
         address to,
         uint256 tokenId,
         bytes memory _data
-    ) public override {
+    ) public virtual override {
         _transfer(from, to, tokenId);
         require(
             _checkOnERC721Received(from, to, tokenId, _data),
@@ -418,7 +418,7 @@ contract BaseERC721 is
         address from,
         address to,
         uint256 tokenId
-    ) private {
+    ) internal {
         TokenOwnership memory prevOwnership = ownershipOf(tokenId);
 
         bool isApprovedOrOwner = (_msgSender() == prevOwnership.addr ||
@@ -516,7 +516,7 @@ contract BaseERC721 is
         address to,
         uint256 tokenId,
         bytes memory _data
-    ) private returns (bool) {
+    ) internal returns (bool) {
         if (to.isContract()) {
             try
                 IERC721ReceiverUpgradeable(to).onERC721Received(
