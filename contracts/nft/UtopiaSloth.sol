@@ -7,6 +7,7 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/se
 import {BaseERC721} from "./BaseERC721.sol";
 import {StringsUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol";
 import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
+import {IUpsaToken} from "../interface/IUpsaToken.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 
@@ -36,6 +37,8 @@ contract UtopiaSloth is
     uint256 public soldAmount;
     bool public isPausedSell;
     bool public isPausedTransfer;
+    IUpsaToken public upta;
+    uint256 public inviteRate; // ?/10000
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "UtopiaSloth::onlyEOA: not eoa");
@@ -50,7 +53,10 @@ contract UtopiaSloth is
         address _priceOracle,
         address[] memory _supportTokensToBuy,
         address _foundation,
-        address _wethAddr
+        address _wethAddr,
+        uint256 _maxSoldAmount,
+        address _upta,
+        uint256 _inviteRate
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
@@ -64,13 +70,25 @@ contract UtopiaSloth is
         }
         foundation = payable(_foundation);
         WETH = _wethAddr;
-        maxSoldAmount = 5000;
+        maxSoldAmount = _maxSoldAmount;
+        upta = IUpsaToken(_upta);
+        inviteRate = _inviteRate;
     }
 
-    function setSupportTokensToBuy(address[] memory _supportTokensToBuy) external onlyOwner {
+    function setSupportTokensToBuy(
+        address[] memory _supportTokensToBuy
+    ) external onlyOwner {
         for (uint256 i = 0; i < _supportTokensToBuy.length; i++) {
             supportTokensToBuy[_supportTokensToBuy[i]] = true;
         }
+    }
+
+    function changeInviteRate(uint256 _inviteRate) external onlyOwner {
+        inviteRate = _inviteRate;
+    }
+
+    function changeUpta(address _upta) external onlyOwner {
+        upta = IUpsaToken(_upta);
     }
 
     function changePricePer(uint256 _pricePer) external onlyOwner {
@@ -102,10 +120,7 @@ contract UtopiaSloth is
         address to,
         uint256 tokenId
     ) public virtual override {
-        require(
-            !isPausedTransfer,
-            "UtopiaSloth::transferFrom: paused"
-        );
+        require(!isPausedTransfer, "UtopiaSloth::transferFrom: paused");
         _transfer(from, to, tokenId);
     }
 
@@ -114,10 +129,7 @@ contract UtopiaSloth is
         address to,
         uint256 tokenId
     ) public virtual override {
-        require(
-            !isPausedTransfer,
-            "UtopiaSloth::safeTransferFrom: paused"
-        );
+        require(!isPausedTransfer, "UtopiaSloth::safeTransferFrom: paused");
         safeTransferFrom(from, to, tokenId, "");
     }
 
@@ -127,10 +139,7 @@ contract UtopiaSloth is
         uint256 tokenId,
         bytes memory _data
     ) public virtual override {
-        require(
-            !isPausedTransfer,
-            "UtopiaSloth::safeTransferFrom: paused"
-        );
+        require(!isPausedTransfer, "UtopiaSloth::safeTransferFrom: paused");
         _transfer(from, to, tokenId);
         require(
             _checkOnERC721Received(from, to, tokenId, _data),
@@ -144,10 +153,7 @@ contract UtopiaSloth is
         uint256 _walletType,
         address _inviter
     ) external payable onlyEOA nonReentrant {
-        require(
-            !isPausedSell,
-            "UtopiaSloth::mintByUser: paused"
-        );
+        require(!isPausedSell, "UtopiaSloth::mintByUser: paused");
         require(
             pricePer > 0,
             "UtopiaSloth::mintByUser: price must larger than 0"
@@ -160,6 +166,10 @@ contract UtopiaSloth is
             _amount <= BATCH_SIZE,
             "UtopiaSloth::mintByUser: too large _amount"
         );
+        require(
+            balanceOf(msg.sender) + _amount <= 10,
+            "UtopiaSloth::mintByUser: too large _amount"
+        );
         uint256 _needEth = _amount * pricePer; // total ETH
         if (_tokenToBuy == address(0)) {
             // ETH
@@ -167,7 +177,13 @@ contract UtopiaSloth is
                 msg.value == _needEth,
                 "UtopiaSloth::mintByUser: not enough fund"
             );
-            SafeToken.safeTransferETH(foundation, _needEth);
+            if (_inviter != address(0)) {
+                uint256 _inviteReward = (_needEth * inviteRate) / 10000;
+                SafeToken.safeTransferETH(foundation, _inviteReward);
+                SafeToken.safeTransferETH(foundation, _needEth - _inviteReward);
+            } else {
+                SafeToken.safeTransferETH(foundation, _needEth);
+            }
         } else {
             // ERC20
             uint256 _ethPrice = priceOracle.getAssetPrice(WETH);
@@ -182,25 +198,56 @@ contract UtopiaSloth is
                 (10 ** IERC20MetadataUpgradeable(_tokenToBuy).decimals())) /
                 _tokenPrice /
                 (10 ** 18);
-            SafeToken.safeTransferFrom(
-                _tokenToBuy,
-                msg.sender,
-                foundation,
-                _needToken
-            );
+            if (_inviter != address(0)) {
+                uint256 _inviteReward = (_needToken * inviteRate) / 10000;
+                SafeToken.safeTransferFrom(
+                    _tokenToBuy,
+                    msg.sender,
+                    foundation,
+                    _inviteReward
+                );
+                SafeToken.safeTransferFrom(
+                    _tokenToBuy,
+                    msg.sender,
+                    foundation,
+                    _needToken - _inviteReward
+                );
+            } else {
+                SafeToken.safeTransferFrom(
+                    _tokenToBuy,
+                    msg.sender,
+                    foundation,
+                    _needToken
+                );
+            }
         }
         _safeMint(msg.sender, _amount);
         soldAmount = soldAmount + _amount;
-        require(soldAmount <= maxSoldAmount, "UtopiaSloth::mintByUser: exceed maxSoldAmount");
+        require(
+            soldAmount <= maxSoldAmount,
+            "UtopiaSloth::mintByUser: exceed maxSoldAmount"
+        );
+        if (address(upta) != address(0)) {
+            upta.mint(msg.sender, 400 * (10 ** upta.decimals()));
+        }
         emit Mint(msg.sender, _tokenToBuy, _amount, _walletType, _inviter);
     }
 
     function mint(uint256 amount) external onlyOwner {
+        soldAmount = soldAmount + amount;
         _safeMint(msg.sender, amount);
     }
 
+    function changeSoldAmount(uint256 _soldAmount) external onlyOwner {
+        soldAmount = _soldAmount;
+    }
+
     function mintTo(address[] memory addrs) external onlyOwner {
-        require(addrs.length <= BATCH_SIZE, "UtopiaSloth::mintTo: addresses too much");
+        require(
+            addrs.length <= BATCH_SIZE,
+            "UtopiaSloth::mintTo: addresses too much"
+        );
+        soldAmount = soldAmount + addrs.length;
         for (uint256 i = 0; i < addrs.length; i++) {
             _safeMint(addrs[i], 1);
         }

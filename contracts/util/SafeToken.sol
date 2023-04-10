@@ -33,9 +33,9 @@ library SafeToken {
   ) internal {
     // bytes4(keccak256(bytes('transfer(address,uint256)')));
     // solhint-disable-next-line avoid-low-level-calls
-    require(isContract(token), "!contract");
+    require(isContract(token), "SafeToken::safeTransfer: !contract");
     (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
-    require(success && (data.length == 0 || abi.decode(data, (bool))), "!safeTransfer");
+    require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeToken::safeTransfer: !safeTransfer");
   }
 
   function safeTransferFrom(
@@ -46,9 +46,9 @@ library SafeToken {
   ) internal {
     // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
     // solhint-disable-next-line avoid-low-level-calls
-    require(isContract(token), "!not contract");
+    require(isContract(token), "SafeToken::safeTransferFrom: !not contract");
     (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
-    require(success && (data.length == 0 || abi.decode(data, (bool))), "!safeTransferFrom");
+    require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeToken::safeTransferFrom: !safeTransferFrom");
   }
 
   function safeApprove(
@@ -57,15 +57,15 @@ library SafeToken {
     uint256 value
   ) internal {
     // bytes4(keccak256(bytes('approve(address,uint256)')));
-    require(isContract(token), "!not contract");
+    require(isContract(token), "SafeToken::safeApprove: !not contract");
     (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
-    require(success && (data.length == 0 || abi.decode(data, (bool))), "!safeApprove");
+    require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeToken::safeApprove: !safeApprove");
   }
 
   function safeTransferETH(address to, uint256 value) internal {
     // solhint-disable-next-line no-call-value
     (bool success, ) = to.call{ value: value }(new bytes(0));
-    require(success, "!safeTransferETH");
+    require(success, "SafeToken::safeTransferETH: !safeTransferETH");
   }
 
   function isContract(address account) internal view returns (bool) {

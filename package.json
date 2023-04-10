@@ -8,11 +8,16 @@
     "deploy": "PKEY=** hardhat run scripts/deploy.ts"
   },
   "dependencies": {
+    "@matterlabs/hardhat-zksync-deploy": "^0.6.3",
+    "@matterlabs/hardhat-zksync-solc": "^0.3.15",
+    "@matterlabs/hardhat-zksync-verify": "^0.1.4",
+    "@nomiclabs/hardhat-etherscan": "^3.1.2",
     "@openzeppelin/contracts": "^4.8.2",
     "@openzeppelin/contracts-upgradeable": "^4.8.2",
     "@openzeppelin/hardhat-upgrades": "^1.22.1",
     "@pefish/js-node-assist": "^2.0.8",
     "@pefish/js-util-file": "^0.0.5",
+    "@redstone-finance/evm-connector": "^0.0.22",
     "@uniswap/v3-periphery": "^1.4.3"
   }
 }

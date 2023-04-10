@@ -33,11 +33,8 @@ contract VaultGateway is
     );
 
     IPriceOracleGetter public priceOracle;
-    uint256 public initialMintRightPerNft; // utopiaToken
-    mapping(uint256 => uint256) public usedMintRight; // tokenId => utopiaToken
-    IERC721MetadataUpgradeable public nft;
     mapping(address => bool) public supportTokensToMint;
-    IUtopiaToken public utopiaToken;
+    IUtopiaToken public override utopiaToken;
     mapping(address => bool) public supportTokensToRedeem;
     address public usdtAddr;
     uint256 public defaultSlippage; // ?/10000
@@ -46,6 +43,7 @@ contract VaultGateway is
     IRouter[] public routers;
     uint256 public redeemFeeRate; // ?/10000
     uint256 public redeemableTime;
+    uint256 public constant maxSlippage = 5000;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "VaultGateway::onlyEOA:: not eoa");
@@ -65,8 +63,6 @@ contract VaultGateway is
 
     function initialize(
         address _priceOracle,
-        uint256 _initialMintRightPerNft,
-        address _nft,
         address[] memory _supportTokensToMint,
         address[] memory _supportTokensToRedeem,
         address _utopiaToken,
@@ -80,8 +76,6 @@ contract VaultGateway is
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
 
         priceOracle = IPriceOracleGetter(_priceOracle);
-        initialMintRightPerNft = _initialMintRightPerNft;
-        nft = IERC721MetadataUpgradeable(_nft);
         for (uint256 i = 0; i < _supportTokensToMint.length; i++) {
             supportTokensToMint[_supportTokensToMint[i]] = true;
         }
@@ -97,8 +91,18 @@ contract VaultGateway is
         redeemableTime = block.timestamp;
     }
 
+    function changeUniswapUtil(address _uniswapUtil) external onlyOwner {
+        uniswapUtil = IUniswapUtil(_uniswapUtil);
+    }
+
     function changeRedeemFeeRate(uint256 _redeemFeeRate) external onlyOwner {
         redeemFeeRate = _redeemFeeRate;
+    }
+
+    function changeDefaultSlippage(
+        uint256 _defaultSlippage
+    ) external onlyOwner {
+        defaultSlippage = _defaultSlippage;
     }
 
     function changeRedeemableTime(uint256 _redeemableTime) external onlyOwner {
@@ -109,15 +113,17 @@ contract VaultGateway is
         routers.push(IRouter(_router));
     }
 
+    function changeRouter(uint256 _index, address _router) external onlyOwner {
+        routers[_index] = IRouter(_router);
+    }
+
     function mintByNftETH(
-        uint256 _tokenId,
         uint256 _utopiaTokenAmount,
         uint256 _slippage
     ) external payable onlyEOA nonReentrant {
-        // verify nft owner
         require(
-            nft.ownerOf(_tokenId) == msg.sender,
-            "VaultGateway::mintByNftETH: must have this nft"
+            _slippage <= maxSlippage,
+            "VaultGateway::mintByNftETH: _slippage too large"
         );
 
         address _tokenToMint = weth;
@@ -177,12 +183,6 @@ contract VaultGateway is
         );
         IWeth(weth).withdrawTo(msg.sender, msg.value - _spentTokenToMintAmount);
 
-        // verify nft usd mint right and mint
-        require(
-            _utopiaTokenAmount <= remainMintRight(_tokenId),
-            "VaultGateway::mintByNft: mint right of nft is not enough"
-        );
-        usedMintRight[_tokenId] = usedMintRight[_tokenId] + _utopiaTokenAmount;
         utopiaToken.mint(msg.sender, _utopiaTokenAmount);
         // emit event
         emit Mint(
@@ -193,24 +193,14 @@ contract VaultGateway is
         );
     }
 
-    function remainMintRight(uint256 _tokenId) public view returns (uint256) {
-        uint256 _remainMintRight = initialMintRightPerNft;
-        if (usedMintRight[_tokenId] != 0) {
-            _remainMintRight = initialMintRightPerNft - usedMintRight[_tokenId];
-        }
-        return _remainMintRight;
-    }
-
     function mintByNft(
-        uint256 _tokenId,
         address _tokenToMint,
         uint256 _utopiaTokenAmount,
         uint256 _slippage
     ) external payable onlyEOA nonReentrant {
-        // verify nft owner
         require(
-            nft.ownerOf(_tokenId) == msg.sender,
-            "VaultGateway::mintByNft: must have this nft"
+            _slippage <= maxSlippage,
+            "VaultGateway::mintByNft: _slippage too large"
         );
         // verify token to mint
         uint256 _spentTokenToMintAmount = 0;
@@ -297,12 +287,6 @@ contract VaultGateway is
                 );
             }
         }
-        // verify nft usd mint right and mint
-        require(
-            _utopiaTokenAmount <= remainMintRight(_tokenId),
-            "VaultGateway::mintByNft: mint right of nft is not enough"
-        );
-        usedMintRight[_tokenId] = usedMintRight[_tokenId] + _utopiaTokenAmount;
         utopiaToken.mint(msg.sender, _utopiaTokenAmount);
         // emit event
         emit Mint(
@@ -317,32 +301,42 @@ contract VaultGateway is
         return _calcUtopiaTokenPrice();
     }
 
-    function _toUsdt(address _token, uint256 _tokenAmount) private view returns (uint256) {
+    function _toUsdt(
+        address _token,
+        uint256 _tokenAmount
+    ) private view returns (uint256) {
         uint256 _tokenPrice = priceOracle.getAssetPrice(_token);
         require(
             _tokenPrice > 0,
             "VaultGateway::_toUsdt: bad _tokenPrice price"
         );
         uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
-        require(
-            _usdtPrice > 0,
-            "VaultGateway::_toUsdt: bad _usdtPrice price"
-        );
-        return _tokenPrice * _tokenAmount * (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals()) / _usdtPrice / 10 ** IERC20MetadataUpgradeable(_token).decimals();
+        require(_usdtPrice > 0, "VaultGateway::_toUsdt: bad _usdtPrice price");
+        return
+            (_tokenPrice *
+                _tokenAmount *
+                (10 ** IERC20MetadataUpgradeable(usdtAddr).decimals())) /
+            _usdtPrice /
+            10 ** IERC20MetadataUpgradeable(_token).decimals();
     }
 
-    function _usdtTo(address _token, uint256 _usdtAmount) private view returns (uint256) {
+    function _usdtTo(
+        address _token,
+        uint256 _usdtAmount
+    ) private view returns (uint256) {
         uint256 _tokenPrice = priceOracle.getAssetPrice(_token);
         require(
             _tokenPrice > 0,
             "VaultGateway::_usdtTo: bad _tokenPrice price"
         );
         uint256 _usdtPrice = priceOracle.getAssetPrice(usdtAddr);
-        require(
-            _usdtPrice > 0,
-            "VaultGateway::_usdtTo: bad _usdtPrice price"
-        );
-        return _usdtPrice * _usdtAmount * (10 ** IERC20MetadataUpgradeable(_token).decimals()) / _tokenPrice / 10 ** IERC20MetadataUpgradeable(usdtAddr).decimals();
+        require(_usdtPrice > 0, "VaultGateway::_usdtTo: bad _usdtPrice price");
+        return
+            (_usdtPrice *
+                _usdtAmount *
+                (10 ** IERC20MetadataUpgradeable(_token).decimals())) /
+            _tokenPrice /
+            10 ** IERC20MetadataUpgradeable(usdtAddr).decimals();
     }
 
     function sendProfit(

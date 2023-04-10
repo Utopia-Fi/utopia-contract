@@ -15,3 +15,6 @@ artifacts
 .yarnrc.yml
 scripts
 test
+deploy
+artifacts-zk
+cache-zk
