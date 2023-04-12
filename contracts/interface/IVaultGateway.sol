@@ -2,6 +2,7 @@
 pragma solidity ^0.8.0;
 
 import {IUtopiaToken} from "../interface/IUtopiaToken.sol";
+import {IRouter} from "../interface/IRouter.sol";
 
 interface IVaultGateway {
     function utopiaToken() external view returns (IUtopiaToken);
@@ -13,4 +14,6 @@ interface IVaultGateway {
     function receiveLoss(address _token, uint256 _amount) external;
 
     function reserveTotal() external view returns (uint256);
+
+    function listRouters() external view returns (IRouter[] memory);
 }

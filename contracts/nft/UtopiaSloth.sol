@@ -10,6 +10,21 @@ import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
 import {IUpsaToken} from "../interface/IUpsaToken.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
+import {IInviteManager} from "../interface/IInviteManager.sol";
+
+struct InviteInfo {
+    address _addr;
+    uint256 _amount;
+}
+
+struct InviteRecord {
+    address _addr;
+    uint256 _amount;
+    address _token;
+    uint256 _tokenAmount;
+    uint256 _rebates;
+    uint256 _timestamp;
+}
 
 contract UtopiaSloth is
     OwnableUpgradeable,
@@ -38,7 +53,10 @@ contract UtopiaSloth is
     bool public isPausedSell;
     bool public isPausedTransfer;
     IUpsaToken public upta;
-    uint256 public inviteRate; // ?/10000
+    uint256 public inviteRate; // out of date
+    mapping(address => InviteInfo[]) public inviteRecords; // out of date
+    IInviteManager public inviteManager;
+    mapping(address => InviteRecord[]) public inviteRecords1;
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "UtopiaSloth::onlyEOA: not eoa");
@@ -56,7 +74,7 @@ contract UtopiaSloth is
         address _wethAddr,
         uint256 _maxSoldAmount,
         address _upta,
-        uint256 _inviteRate
+        address _inviteManager
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
@@ -72,7 +90,11 @@ contract UtopiaSloth is
         WETH = _wethAddr;
         maxSoldAmount = _maxSoldAmount;
         upta = IUpsaToken(_upta);
-        inviteRate = _inviteRate;
+        inviteManager = IInviteManager(_inviteManager);
+    }
+
+    function listInviteRecords() external view returns (InviteRecord[] memory) {
+        return inviteRecords1[msg.sender];
     }
 
     function setSupportTokensToBuy(
@@ -83,8 +105,8 @@ contract UtopiaSloth is
         }
     }
 
-    function changeInviteRate(uint256 _inviteRate) external onlyOwner {
-        inviteRate = _inviteRate;
+    function changeInviteManager(address _inviteManager) external onlyOwner {
+        inviteManager = IInviteManager(_inviteManager);
     }
 
     function changeUpta(address _upta) external onlyOwner {
@@ -170,6 +192,10 @@ contract UtopiaSloth is
             balanceOf(msg.sender) + _amount <= 10,
             "UtopiaSloth::mintByUser: too large _amount"
         );
+        if (address(inviteManager) != address(0)) {
+            inviteManager.tryInvite(_inviter, msg.sender);
+        }
+
         uint256 _needEth = _amount * pricePer; // total ETH
         if (_tokenToBuy == address(0)) {
             // ETH
@@ -177,10 +203,27 @@ contract UtopiaSloth is
                 msg.value == _needEth,
                 "UtopiaSloth::mintByUser: not enough fund"
             );
-            if (_inviter != address(0)) {
-                uint256 _inviteReward = (_needEth * inviteRate) / 10000;
-                SafeToken.safeTransferETH(foundation, _inviteReward);
+            if (
+                address(inviteManager) != address(0) &&
+                inviteManager.inviters(msg.sender) != address(0)
+            ) {
+                uint256 _inviteReward = (_needEth *
+                    inviteManager.inviteRateOfNftSell()) / 10000;
+                SafeToken.safeTransferETH(
+                    inviteManager.inviters(msg.sender),
+                    _inviteReward
+                );
                 SafeToken.safeTransferETH(foundation, _needEth - _inviteReward);
+                inviteRecords1[inviteManager.inviters(msg.sender)].push(
+                    InviteRecord(
+                        msg.sender,
+                        _amount,
+                        _tokenToBuy,
+                        _needEth,
+                        _inviteReward,
+                        block.timestamp
+                    )
+                );
             } else {
                 SafeToken.safeTransferETH(foundation, _needEth);
             }
@@ -198,12 +241,16 @@ contract UtopiaSloth is
                 (10 ** IERC20MetadataUpgradeable(_tokenToBuy).decimals())) /
                 _tokenPrice /
                 (10 ** 18);
-            if (_inviter != address(0)) {
-                uint256 _inviteReward = (_needToken * inviteRate) / 10000;
+            if (
+                address(inviteManager) != address(0) &&
+                inviteManager.inviters(msg.sender) != address(0)
+            ) {
+                uint256 _inviteReward = (_needToken *
+                    inviteManager.inviteRateOfNftSell()) / 10000;
                 SafeToken.safeTransferFrom(
                     _tokenToBuy,
                     msg.sender,
-                    foundation,
+                    inviteManager.inviters(msg.sender),
                     _inviteReward
                 );
                 SafeToken.safeTransferFrom(
@@ -211,6 +258,16 @@ contract UtopiaSloth is
                     msg.sender,
                     foundation,
                     _needToken - _inviteReward
+                );
+                inviteRecords1[inviteManager.inviters(msg.sender)].push(
+                    InviteRecord(
+                        msg.sender,
+                        _amount,
+                        _tokenToBuy,
+                        _needToken,
+                        _inviteReward,
+                        block.timestamp
+                    )
                 );
             } else {
                 SafeToken.safeTransferFrom(
