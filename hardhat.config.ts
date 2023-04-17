@@ -18,7 +18,7 @@ const config: HardhatUserConfig = {
       zksync: false,
     },
     zkTestnet: {
-      url: "https://zksync2-testnet.zksync.dev",
+      url: "https://zksync2-testnet.zksync.dev", // https://goerli-api.zksync.io/jsrpc
       ethNetwork: "",
       chainId: 280,
       zksync: true,

@@ -7,10 +7,10 @@ import {IWeth} from "../../interface/IWeth.sol";
 import {SafeToken} from "../../util/SafeToken.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
-import {IPriceOracleGetter} from "../../interface/IPriceOracleGetter.sol";
+import {IPriceOracle} from "../../interface/IPriceOracle.sol";
 
 contract UniswapUtilTestnet is OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    IPriceOracleGetter public priceOracle;
+    IPriceOracle public priceOracle;
     IWeth public weth;
 
     function initialize(
@@ -18,7 +18,7 @@ contract UniswapUtilTestnet is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         address _weth
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
-        priceOracle = IPriceOracleGetter(_priceOracle);
+        priceOracle = IPriceOracle(_priceOracle);
         weth = IWeth(_weth);
     }
 

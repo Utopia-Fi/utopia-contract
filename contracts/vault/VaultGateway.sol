@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
+import {IPriceOracle} from "../interface/IPriceOracle.sol";
 import {IUtopiaToken} from "../interface/IUtopiaToken.sol";
 import {IUniswapUtil} from "../interface/IUniswapUtil.sol";
 import {IVaultGateway} from "../interface/IVaultGateway.sol";
@@ -33,7 +33,7 @@ contract VaultGateway is
         uint256 _redeemFee
     );
 
-    IPriceOracleGetter public priceOracle;
+    IPriceOracle public priceOracle;
     mapping(address => bool) public supportTokensToMint;
     IUtopiaToken public override utopiaToken;
     mapping(address => bool) public supportTokensToRedeem;
@@ -78,7 +78,7 @@ contract VaultGateway is
         OwnableUpgradeable.__Ownable_init();
         ReentrancyGuardUpgradeable.__ReentrancyGuard_init();
 
-        priceOracle = IPriceOracleGetter(_priceOracle);
+        priceOracle = IPriceOracle(_priceOracle);
         for (uint256 i = 0; i < _supportTokensToMint.length; i++) {
             supportTokensToMint[_supportTokensToMint[i]] = true;
         }

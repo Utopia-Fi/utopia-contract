@@ -8,15 +8,17 @@ import {IInviteManager} from "../interface/IInviteManager.sol";
 import {IVaultGateway} from "../interface/IVaultGateway.sol";
 import {IRouter} from "../interface/IRouter.sol";
 
-contract InviteManager is OwnableUpgradeable, ReentrancyGuardUpgradeable, IInviteManager {
-
+contract InviteManager is
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable,
+    IInviteManager
+{
     event Invited(address indexed _inviter, address _invitee);
 
-    mapping(address => address) public inviters;  // B => A, A invited B
+    mapping(address => address) public inviters; // B => A, A invited B
     uint256 public inviteRateOfNftSell;
     mapping(address => bool) public tryInviteWhiteList;
     IVaultGateway public vaultGateway;
-    
 
     function initialize(
         address[] calldata _tryInviteWhiteList,
@@ -35,40 +37,58 @@ contract InviteManager is OwnableUpgradeable, ReentrancyGuardUpgradeable, IInvit
 
     modifier onlyTryInviteWhiteList() {
         bool _isRouter = false;
-        IRouter[] memory routers = vaultGateway.listRouters();
-        for (uint256 i = 0; i < routers.length; i++) {
-            if (msg.sender == address(routers[i])) {
-                _isRouter = true;
-                break;
+        if (address(vaultGateway) != address(0)) {
+            IRouter[] memory routers = vaultGateway.listRouters();
+            for (uint256 i = 0; i < routers.length; i++) {
+                if (msg.sender == address(routers[i])) {
+                    _isRouter = true;
+                    break;
+                }
             }
         }
-        require(tryInviteWhiteList[msg.sender] || _isRouter, "UtopiaSloth::onlyTryInviteWhiteList: not tryInviteWhiteList");
+
+        require(
+            tryInviteWhiteList[msg.sender] || _isRouter,
+            "UtopiaSloth::onlyTryInviteWhiteList: not tryInviteWhiteList"
+        );
         _;
     }
 
-    function changeVaultGateway (address _vaultGateway) external onlyOwner {
+    function changeVaultGateway(address _vaultGateway) external onlyOwner {
         vaultGateway = IVaultGateway(_vaultGateway);
     }
 
-    function changeInviteRateOfNftSell (uint256 _inviteRateOfNftSell) external onlyOwner {
+    function changeInviteRateOfNftSell(
+        uint256 _inviteRateOfNftSell
+    ) external onlyOwner {
         inviteRateOfNftSell = _inviteRateOfNftSell;
     }
 
-    function changeTryInviteWhiteList (address[] calldata _tryInviteWhiteList) external onlyOwner {
+    function changeTryInviteWhiteList(
+        address[] calldata _tryInviteWhiteList
+    ) external onlyOwner {
         for (uint256 i = 0; i < _tryInviteWhiteList.length; i++) {
             tryInviteWhiteList[_tryInviteWhiteList[i]] = true;
         }
     }
 
-    function tryInvite(address _inviter, address _invitee) external onlyTryInviteWhiteList returns (bool) {
+    function tryInvite(
+        address _inviter,
+        address _invitee
+    ) external onlyTryInviteWhiteList returns (bool) {
         if (_inviter == address(0) || _invitee == address(0)) {
             return false;
         }
-        if (inviters[_invitee] != address(0) && inviters[_invitee] != _inviter) {
+        if (
+            inviters[_invitee] != address(0) && inviters[_invitee] != _inviter
+        ) {
             return false;
         }
-        inviters[_invitee] = _inviter;
-        emit Invited(_inviter, _invitee);
+        if (inviters[_invitee] == address(0)) {
+            inviters[_invitee] = _inviter;
+            emit Invited(_inviter, _invitee);
+        }
+
         return true;
     }
 }

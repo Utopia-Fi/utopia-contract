@@ -3,11 +3,11 @@ pragma solidity ^0.8.0;
 
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IGmxPriceFeeder} from "../../interface/IGmxPriceFeeder.sol";
-import {IPriceOracleGetter} from "../../interface/IPriceOracleGetter.sol";
+import {IPriceOracle} from "../../interface/IPriceOracle.sol";
 import {IChainlinkAggregator} from "../../interface/IChainlinkAggregator.sol";
 import {AddressUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/AddressUpgradeable.sol";
 
-contract ArbPriceOracle is IPriceOracleGetter, OwnableUpgradeable {
+contract ArbPriceOracle is IPriceOracle, OwnableUpgradeable {
     event BaseCurrencySet(
         address indexed baseCurrency,
         uint256 baseCurrencyUnit
@@ -140,7 +140,9 @@ contract ArbPriceOracle is IPriceOracleGetter, OwnableUpgradeable {
                     if (_result == 0) {
                         _result = _prices[i];
                     } else {
-                        _result = (_result + _prices[i]) / 2;
+                        if (_prices[i] > _result / 2 && _prices[i] < _result * 2) {
+                            _result = (_result + _prices[i]) / 2;
+                        }
                     }
                 }
             }

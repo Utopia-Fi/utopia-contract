@@ -6,7 +6,7 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {BaseERC721} from "./BaseERC721.sol";
 import {StringsUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol";
-import {IPriceOracleGetter} from "../interface/IPriceOracleGetter.sol";
+import {IPriceOracle} from "../interface/IPriceOracle.sol";
 import {IUpsaToken} from "../interface/IUpsaToken.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
@@ -39,13 +39,22 @@ contract UtopiaSloth is
         address _inviter
     );
 
+    event RebateRecordEvent(
+        address indexed _inviter,
+        address _invitee,
+        uint256 _amount,
+        address _token,
+        uint256 _tokenAmount,
+        uint256 _rebates
+    );
+
     using StringsUpgradeable for uint256;
     string baseURI;
     uint256 public constant BATCH_SIZE = 10;
     uint256 public constant MAX_SUPPLY = 1000000;
     address public WETH;
     uint256 public pricePer; // ETH
-    IPriceOracleGetter public priceOracle;
+    IPriceOracle public priceOracle;
     mapping(address => bool) public supportTokensToBuy;
     address payable public foundation;
     uint256 public maxSoldAmount;
@@ -56,7 +65,7 @@ contract UtopiaSloth is
     uint256 public inviteRate; // out of date
     mapping(address => InviteInfo[]) public inviteRecords; // out of date
     IInviteManager public inviteManager;
-    mapping(address => InviteRecord[]) public inviteRecords1;
+    mapping(address => InviteRecord[]) public inviteRecords1; // out of date
 
     modifier onlyEOA() {
         require(msg.sender == tx.origin, "UtopiaSloth::onlyEOA: not eoa");
@@ -81,7 +90,7 @@ contract UtopiaSloth is
         BaseERC721.initialize(name, symbol, BATCH_SIZE, MAX_SUPPLY);
 
         baseURI = uri;
-        priceOracle = IPriceOracleGetter(_priceOracle);
+        priceOracle = IPriceOracle(_priceOracle);
         pricePer = _pricePer;
         for (uint256 i = 0; i < _supportTokensToBuy.length; i++) {
             supportTokensToBuy[_supportTokensToBuy[i]] = true;
@@ -91,10 +100,6 @@ contract UtopiaSloth is
         maxSoldAmount = _maxSoldAmount;
         upta = IUpsaToken(_upta);
         inviteManager = IInviteManager(_inviteManager);
-    }
-
-    function listInviteRecords() external view returns (InviteRecord[] memory) {
-        return inviteRecords1[msg.sender];
     }
 
     function setSupportTokensToBuy(
@@ -192,7 +197,7 @@ contract UtopiaSloth is
             balanceOf(msg.sender) + _amount <= 10,
             "UtopiaSloth::mintByUser: too large _amount"
         );
-        if (address(inviteManager) != address(0)) {
+        if (address(inviteManager) != address(0) && _inviter != address(0)) {
             inviteManager.tryInvite(_inviter, msg.sender);
         }
 
@@ -214,15 +219,13 @@ contract UtopiaSloth is
                     _inviteReward
                 );
                 SafeToken.safeTransferETH(foundation, _needEth - _inviteReward);
-                inviteRecords1[inviteManager.inviters(msg.sender)].push(
-                    InviteRecord(
-                        msg.sender,
-                        _amount,
-                        _tokenToBuy,
-                        _needEth,
-                        _inviteReward,
-                        block.timestamp
-                    )
+                emit RebateRecordEvent(
+                    inviteManager.inviters(msg.sender),
+                    msg.sender,
+                    _amount,
+                    _tokenToBuy,
+                    _needEth,
+                    _inviteReward
                 );
             } else {
                 SafeToken.safeTransferETH(foundation, _needEth);
@@ -259,15 +262,13 @@ contract UtopiaSloth is
                     foundation,
                     _needToken - _inviteReward
                 );
-                inviteRecords1[inviteManager.inviters(msg.sender)].push(
-                    InviteRecord(
-                        msg.sender,
-                        _amount,
-                        _tokenToBuy,
-                        _needToken,
-                        _inviteReward,
-                        block.timestamp
-                    )
+                emit RebateRecordEvent(
+                    inviteManager.inviters(msg.sender),
+                    msg.sender,
+                    _amount,
+                    _tokenToBuy,
+                    _needToken,
+                    _inviteReward
                 );
             } else {
                 SafeToken.safeTransferFrom(
