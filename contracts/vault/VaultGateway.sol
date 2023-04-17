@@ -9,7 +9,6 @@ import {IVaultGateway} from "../interface/IVaultGateway.sol";
 import {IRouter} from "../interface/IRouter.sol";
 import {IWeth} from "../interface/IWeth.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import {IERC721MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/IERC721MetadataUpgradeable.sol";
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 import {IInviteManager} from "../interface/IInviteManager.sol";
