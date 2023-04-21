@@ -100,7 +100,6 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
     mapping(address => mapping(address => Position)) public positions; // user => (_collateralToken => Position)
     IVaultGateway public vaultGateway;
     address public weth;
-    uint256 public constant FACTOR_MULTIPLIER = 10 ** 18;
     mapping(address => bool) public liquidators;
     uint256 public maxLeverage;
     IInviteManager public inviteManager;
@@ -495,6 +494,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         uint256 _minOrMaxPrice,
         address _inviter
     ) external payable onlyEOA nonReentrant {
+        
         require(
             _leverage <= maxLeverage,
             "Router::increasePosition: _leverage too large"
@@ -556,7 +556,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         Position storage _pos = positions[msg.sender][_collateralToken];
         _pos._collateralTokenAmount += _collateralTokenAmount;
         uint256 _positionSize = _collateralTokenAmount * _leverage;
-
+        _changeFactors(_info, _isLong, _positionSize, _tradePairTokenPrice);
         if (_pos._positionSize == 0) {
             // new position
             _pos._openPrice = _tradePairTokenPrice;
@@ -608,7 +608,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             _pos._positionSize >= _info._minPositionSize,
             "Router::_decreasePosition: _positionSize too small"
         );
-        _changeFactors(_info, _isLong, _positionSize, _tradePairTokenPrice);
+        
         IUtopiaToken _utopiaToken = vaultGateway.utopiaToken();
         if (_pos._collateralToken == address(_utopiaToken)) {
             require(
