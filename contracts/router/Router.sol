@@ -613,7 +613,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         if (_pos._collateralToken == address(_utopiaToken)) {
             require(
                 _pos._positionSize <=
-                    _utopiaToken.totalSupply() * _info._upsMaxPositionSizeRate,
+                    _utopiaToken.totalSupply() * _info._upsMaxPositionSizeRate / 10000,
                 "Router::increasePosition: _positionSize too large"
             );
         } else {

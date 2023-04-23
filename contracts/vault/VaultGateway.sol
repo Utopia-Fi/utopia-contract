@@ -358,6 +358,10 @@ contract VaultGateway is
         address _token,
         uint256 _amount
     ) external onlyRouter {
+        if (_token == address(utopiaToken)) {
+            utopiaToken.mint(_account, _amount);
+            return;
+        }
         // swap
         if (_token != usdtAddr) {
             uint256 _needUsdtAmount = _toUsdt(_token, _amount);
@@ -379,6 +383,10 @@ contract VaultGateway is
     }
 
     function receiveLoss(address _token, uint256 _amount) external onlyRouter {
+        if (_token == address(utopiaToken)) {
+            utopiaToken.burn(msg.sender, _amount);
+            return;
+        }
         // fetch token
         SafeToken.safeTransferFrom(_token, msg.sender, address(this), _amount);
         // swap to usdt

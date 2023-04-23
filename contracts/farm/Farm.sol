@@ -39,7 +39,7 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     IERC20MetadataUpgradeable public token;
     uint256 constant MAXOUTFEE = 50;
     address public foundation;
-    uint256 public harvestFee; // ? / 10000
+    uint256 public harvestFeeRate; // ? / 10000
     uint256 public tokenInPool;
 
     uint256 public nftBonusRate; // ? / 10000
@@ -86,7 +86,9 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             _userInfo._rewardDebt;
     }
 
-    function _amountWithNft(UserInfo memory _userInfo) private view returns (uint256) {
+    function _amountWithNft(
+        UserInfo memory _userInfo
+    ) private view returns (uint256) {
         if (_userInfo._tokenIds.length > 0) {
             return
                 _userInfo._amount + (_userInfo._amount * nftBonusRate) / 10000;
@@ -99,19 +101,36 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         return poolInfo.length;
     }
 
+    function apr(
+        uint256 _pid,
+        uint256 _tokenPrice,
+        uint256 _stakeTokenPrice
+    ) external view returns (uint256) {
+        PoolInfo memory _pool = poolInfo[_pid];
+        uint256 _valuePerYear = _tokenPrice * tokenPerSecond * 31536000;
+        uint256 _totalValueInPool = _stakeTokenPrice *
+            SafeToken.balanceOf(_pool._stakeToken, address(this));
+        uint256 _totalApr = (_valuePerYear *
+            IERC20MetadataUpgradeable(_pool._stakeToken).decimals() *
+            10 ** 18) /
+            _totalValueInPool /
+            IERC20MetadataUpgradeable(token).decimals();
+        return (_totalApr * _pool._allocPoint) / totalAllocPoint;
+    }
+
     function _harvest(address _to, uint256 _pid) internal {
         PoolInfo storage _pool = poolInfo[_pid];
         UserInfo storage _userInfo = userInfo[_pid][_to];
         require(_userInfo._amount > 0, "Farm::_harvest: nothing to harvest");
-        uint256 _totalRewards = (_amountWithNft(_userInfo) * _pool._accTokenPerShare) /
-            1e12;
+        uint256 _totalRewards = (_amountWithNft(_userInfo) *
+            _pool._accTokenPerShare) / 1e12;
         uint256 _pending = _totalRewards - _userInfo._rewardDebt;
 
         require(
             _pending <= token.balanceOf(address(this)),
             "Farm::_harvest: not enough token"
         );
-        uint256 _fee = (_pending * harvestFee) / 10000;
+        uint256 _fee = (_pending * harvestFeeRate) / 10000;
         if (_fee > 0) {
             _safeTokenTransfer(foundation, _fee);
         }
@@ -286,9 +305,7 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         tokenPerSecond = _tokenPerSecond;
     }
 
-    function setNftBonusRate(
-        uint256 _nftBonusRate
-    ) external onlyOwner {
+    function setNftBonusRate(uint256 _nftBonusRate) external onlyOwner {
         nftBonusRate = _nftBonusRate;
     }
 
