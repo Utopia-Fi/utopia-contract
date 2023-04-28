@@ -6,6 +6,7 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/se
 import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
 import {SafeToken} from "../util/SafeToken.sol";
 import {IERC721MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/IERC721MetadataUpgradeable.sol";
+import { IERC721ReceiverUpgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC721/IERC721ReceiverUpgradeable.sol";
 
 contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     event Deposit(address indexed _user, uint256 indexed _pid, uint256 _amount);
@@ -63,6 +64,14 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         nftBonusRate = _nftBonusRate;
     }
 
+    function stakedNfts(
+        uint256 _pid,
+        address _user
+    ) public view returns (uint256[] memory) {
+        UserInfo storage _userInfo = userInfo[_pid][_user];
+        return _userInfo._tokenIds;
+    }
+
     function pendingToken(
         uint256 _pid,
         address _user
@@ -70,8 +79,7 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         PoolInfo storage _pool = poolInfo[_pid];
         UserInfo storage _userInfo = userInfo[_pid][_user];
         uint256 _accTokenPerShare = _pool._accTokenPerShare;
-        uint256 _lpSupply = IERC20MetadataUpgradeable(_pool._stakeToken)
-            .balanceOf(address(this));
+        uint256 _lpSupply = totalStakeToken(_pid);
         if (block.timestamp > _pool._lastRewardTimestamp && _lpSupply != 0) {
             uint256 _tokenReward = ((block.timestamp -
                 _pool._lastRewardTimestamp) *
@@ -84,6 +92,14 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             (_amountWithNft(_userInfo) * _accTokenPerShare) /
             1e12 -
             _userInfo._rewardDebt;
+    }
+
+    function amountWithNft(
+        uint256 _pid,
+        address _user
+    ) external view returns (uint256) {
+        UserInfo storage _userInfo = userInfo[_pid][_user];
+        return _amountWithNft(_userInfo);
     }
 
     function _amountWithNft(
@@ -101,20 +117,31 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         return poolInfo.length;
     }
 
+    function totalStakeToken(uint256 _pid) public view returns (uint256) {
+        PoolInfo memory _pool = poolInfo[_pid];
+        if (_pool._stakeToken == address(token)) {
+            return tokenInPool;
+        } else {
+            return SafeToken.balanceOf(_pool._stakeToken, address(this));
+        }
+    }
+
     function apr(
         uint256 _pid,
         uint256 _tokenPrice,
         uint256 _stakeTokenPrice
     ) external view returns (uint256) {
         PoolInfo memory _pool = poolInfo[_pid];
-        uint256 _valuePerYear = _tokenPrice * tokenPerSecond * 31536000;
-        uint256 _totalValueInPool = _stakeTokenPrice *
-            SafeToken.balanceOf(_pool._stakeToken, address(this));
-        uint256 _totalApr = (_valuePerYear *
-            IERC20MetadataUpgradeable(_pool._stakeToken).decimals() *
-            10 ** 18) /
-            _totalValueInPool /
-            IERC20MetadataUpgradeable(token).decimals();
+        uint256 _totalStakeToken = totalStakeToken(_pid);
+        if (_totalStakeToken == 0) {
+            _totalStakeToken =
+                10 ** IERC20MetadataUpgradeable(_pool._stakeToken).decimals();
+        }
+        uint256 _valuePerYear = (_tokenPrice * tokenPerSecond * 31536000) /
+            10 ** IERC20MetadataUpgradeable(token).decimals();
+        uint256 _totalValueInPool = (_stakeTokenPrice * _totalStakeToken) /
+            10 ** IERC20MetadataUpgradeable(_pool._stakeToken).decimals();
+        uint256 _totalApr = (_valuePerYear * 10 ** 18) / _totalValueInPool;
         return (_totalApr * _pool._allocPoint) / totalAllocPoint;
     }
 
@@ -125,7 +152,9 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         uint256 _totalRewards = (_amountWithNft(_userInfo) *
             _pool._accTokenPerShare) / 1e12;
         uint256 _pending = _totalRewards - _userInfo._rewardDebt;
-
+        if (_pending == 0) {
+            return;
+        }
         require(
             _pending <= token.balanceOf(address(this)),
             "Farm::_harvest: not enough token"
@@ -136,7 +165,6 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         }
         _safeTokenTransfer(_to, _pending - _fee);
 
-        _userInfo._rewardDebt = _totalRewards;
         emit Harvest(_to, _pid, _pending);
     }
 
@@ -152,14 +180,17 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     function _withdraw(uint256 _pid, uint256 _amount) internal {
         PoolInfo storage _pool = poolInfo[_pid];
         UserInfo storage _userInfo = userInfo[_pid][msg.sender];
-        bool _withdrawAll = _amount == _amountWithNft(_userInfo);
         require(
-            _amountWithNft(_userInfo) >= _amount,
+            _userInfo._amount >= _amount,
             "Farm::_withdraw: amount not enough"
         );
+        bool _withdrawAll = _amount == _userInfo._amount;
         updatePool(_pid);
         _harvest(msg.sender, _pid);
         _userInfo._amount -= _amount;
+        _userInfo._rewardDebt =
+            (_amountWithNft(_userInfo) * _pool._accTokenPerShare) /
+            1e12;
         if (_pool._stakeToken != address(0)) {
             uint256 _outFee = _pool._outFee;
             if (block.timestamp > _pool._noOutFeeTimestamp) {
@@ -180,7 +211,6 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         }
 
         if (_withdrawAll && _userInfo._tokenIds.length > 0) {
-            // withdraw nft
             for (uint256 i = 0; i < _userInfo._tokenIds.length; i++) {
                 utopiaNft.safeTransferFrom(
                     address(this),
@@ -214,15 +244,23 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             tokenInPool = tokenInPool + _amount;
         }
         _userInfo._amount += _amount;
+        _userInfo._rewardDebt =
+            (_amountWithNft(_userInfo) * _pool._accTokenPerShare) /
+            1e12;
         emit Deposit(msg.sender, _pid, _amount);
     }
 
     function depositNft(uint256 _pid, uint256 _tokenId) external nonReentrant {
         utopiaNft.safeTransferFrom(msg.sender, address(this), _tokenId);
         UserInfo storage _userInfo = userInfo[_pid][msg.sender];
-        if (_amountWithNft(_userInfo) > 0) {
-            _harvest(msg.sender, _pid);
-        }
+        require(
+            _amountWithNft(_userInfo) > 0,
+            "Farm::depositNft: must deposit token first"
+        );
+        _harvest(msg.sender, _pid);
+        _userInfo._rewardDebt =
+            (_amountWithNft(_userInfo) * poolInfo[_pid]._accTokenPerShare) /
+            1e12;
         require(
             _userInfo._tokenIds.length < MaxDepositedNum,
             "Farm::depositNft: MaxDepositedNum"
@@ -239,6 +277,10 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
     function harvest(uint256 _pid) external nonReentrant {
         updatePool(_pid);
         _harvest(msg.sender, _pid);
+        UserInfo storage _userInfo = userInfo[_pid][msg.sender];
+        _userInfo._rewardDebt =
+            (_amountWithNft(_userInfo) * poolInfo[_pid]._accTokenPerShare) /
+            1e12;
     }
 
     function setPool(
@@ -320,8 +362,7 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         if (block.timestamp <= _pool._lastRewardTimestamp) {
             return;
         }
-        uint256 _lpSupply = IERC20MetadataUpgradeable(_pool._stakeToken)
-            .balanceOf(address(this));
+        uint256 _lpSupply = totalStakeToken(_pid);
         if (_lpSupply == 0) {
             _pool._lastRewardTimestamp = block.timestamp;
             return;
@@ -331,5 +372,9 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             _pool._allocPoint) / totalAllocPoint;
         _pool._accTokenPerShare += (_tokenReward * 1e12) / _lpSupply;
         _pool._lastRewardTimestamp = block.timestamp;
+    }
+
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return IERC721ReceiverUpgradeable.onERC721Received.selector;
     }
 }

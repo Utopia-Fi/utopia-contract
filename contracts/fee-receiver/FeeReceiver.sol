@@ -31,6 +31,10 @@ contract FeeReceiver is OwnableUpgradeable, IFeeReceiver {
         _;
     }
 
+    function changeVaultGateway(address _vaultGateway) external onlyOwner {
+        vaultGateway = IVaultGateway(_vaultGateway);
+    }
+
     function receiveFee(address _token, uint256 _amount) external onlyRouters {
         SafeToken.safeTransferFrom(_token, msg.sender, address(this), _amount);
     }

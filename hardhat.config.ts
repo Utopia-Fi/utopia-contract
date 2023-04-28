@@ -32,7 +32,7 @@ const config: HardhatUserConfig = {
       verifyURL: 'https://zksync2-mainnet-explorer.zksync.io/contract_verification',
       timeout: 10000
     },
-    arbitrum: {
+    arb: {
       url: "https://arb1.arbitrum.io/rpc",
       accounts: [process.env.PKEY || "0000000000000000000000000000000000000000000000000000000000000000"],
       chainId: 42161,

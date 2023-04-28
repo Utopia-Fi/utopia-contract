@@ -436,6 +436,17 @@ contract VaultGateway is
             );
             return _usdtPrice;
         }
+        uint256 _upsSupply = utopiaToken.totalSupply();
+        for (uint256 i = 0; i < routers.length; i++) {
+            int256 _a = routers[i].upsTotalFloat();
+            if (_a >= 0) {
+                _upsSupply += uint256(_a);
+            } else {
+                _upsSupply -= uint256(-_a);
+            }
+            
+        }
+
         int256 _totalTradePairFloat = totalTradePairFloat();
         if (_totalTradePairFloat >= 0) {
             require(
@@ -444,11 +455,11 @@ contract VaultGateway is
             );
             return
                 ((_reserveTotal - uint256(_totalTradePairFloat)) *
-                    (10 ** utopiaToken.decimals())) / utopiaToken.totalSupply();
+                    (10 ** utopiaToken.decimals())) / _upsSupply;
         } else {
             return
                 ((_reserveTotal + uint256(-_totalTradePairFloat)) *
-                    (10 ** utopiaToken.decimals())) / utopiaToken.totalSupply();
+                    (10 ** utopiaToken.decimals())) / _upsSupply;
         }
     }
 
