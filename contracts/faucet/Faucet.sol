@@ -12,7 +12,8 @@ struct TokenInfo {
 
 contract Faucet is OwnableUpgradeable {
 
-    TokenInfo[] storage public tokenInfos;
+    address[] public tokens;
+    mapping(address => TokenInfo) public tokenInfos;
     address public sender;
 
     function initialize(
@@ -21,22 +22,34 @@ contract Faucet is OwnableUpgradeable {
     ) external initializer {
         OwnableUpgradeable.__Ownable_init();
 
-        tokenInfos = _tokenInfos;
+        for (uint256 i = 0; i < _tokenInfos.length; i++) {
+            tokenInfos[
+                _tokenInfos[i]._token
+            ] = _tokenInfos[i];
+            tokens.push(_tokenInfos[i]._token);
+        }
         sender = _sender;
     }
 
-    modifier onlySender {
-        require(sender == msg.sender, "Faucet::onlySender: not sender");
+    receive() external payable {}
+
+    modifier onlySenderOrOwner {
+        require(sender == msg.sender || owner() == msg.sender, "Faucet::onlySender: not sender and not owner");
         _;
     }
 
     function changeTokenInfos(TokenInfo[] memory _tokenInfos) external onlyOwner {
-        tokenInfos = _tokenInfos;
+        for (uint256 i = 0; i < _tokenInfos.length; i++) {
+            tokenInfos[
+                _tokenInfos[i]._token
+            ] = _tokenInfos[i];
+            tokens.push(_tokenInfos[i]._token);
+        }
     }
 
-    function send(address _target) external onlySender {
-        for (uint256 i = 0; i < tokenInfos.length; i++) {
-            TokenInfo memory _tokenInfo = tokenInfos[i];
+    function send(address _target) external onlySenderOrOwner {
+        for (uint256 i = 0; i < tokens.length; i++) {
+            TokenInfo memory _tokenInfo = tokenInfos[tokens[i]];
             if (_tokenInfo._token == address(0)) {
                 SafeToken.safeTransferETH(_target, _tokenInfo._amount);
             } else {
