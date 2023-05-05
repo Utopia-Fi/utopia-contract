@@ -231,7 +231,7 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             "Pool::deposit:: not accept deposit token"
         );
         updatePool(_pid);
-        if (_amountWithNft(_userInfo) > 0) {
+        if (_userInfo._amount > 0) {
             _harvest(msg.sender, _pid);
         }
         SafeToken.safeTransferFrom(
@@ -254,18 +254,21 @@ contract Farm is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         utopiaNft.safeTransferFrom(msg.sender, address(this), _tokenId);
         UserInfo storage _userInfo = userInfo[_pid][msg.sender];
         require(
-            _amountWithNft(_userInfo) > 0,
+            _userInfo._amount > 0,
             "Farm::depositNft: must deposit token first"
         );
-        _harvest(msg.sender, _pid);
-        _userInfo._rewardDebt =
-            (_amountWithNft(_userInfo) * poolInfo[_pid]._accTokenPerShare) /
-            1e12;
         require(
             _userInfo._tokenIds.length < MaxDepositedNum,
             "Farm::depositNft: MaxDepositedNum"
         );
+        if (_userInfo._amount > 0) {
+            _harvest(msg.sender, _pid);
+        }
         _userInfo._tokenIds.push(_tokenId);
+
+        _userInfo._rewardDebt =
+            (_amountWithNft(_userInfo) * poolInfo[_pid]._accTokenPerShare) /
+            1e12;
 
         emit DepositNft(msg.sender, _tokenId);
     }
