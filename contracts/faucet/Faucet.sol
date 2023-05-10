@@ -39,6 +39,7 @@ contract Faucet is OwnableUpgradeable {
     }
 
     function changeTokenInfos(TokenInfo[] memory _tokenInfos) external onlyOwner {
+        delete tokens;
         for (uint256 i = 0; i < _tokenInfos.length; i++) {
             tokenInfos[
                 _tokenInfos[i]._token

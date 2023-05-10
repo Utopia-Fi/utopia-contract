@@ -94,11 +94,15 @@ contract VaultGateway is
         inviteManager = IInviteManager(_inviteManager);
     }
 
+    receive() external payable {}
+
     function listRouters() external view returns (IRouter[] memory) {
         return routers;
     }
 
-    function changeSupportTokensToMint(address[] memory _supportTokensToMint) external onlyOwner {
+    function changeSupportTokensToMint(
+        address[] memory _supportTokensToMint
+    ) external onlyOwner {
         for (uint256 i = 0; i < _supportTokensToMint.length; i++) {
             supportTokensToMint[_supportTokensToMint[i]] = true;
         }
@@ -106,6 +110,10 @@ contract VaultGateway is
 
     function changeInviteManager(address _inviteManager) external onlyOwner {
         inviteManager = IInviteManager(_inviteManager);
+    }
+
+    function changeWeth(address _weth) external onlyOwner {
+        weth = _weth;
     }
 
     function changeUniswapUtil(address _uniswapUtil) external onlyOwner {
@@ -196,7 +204,9 @@ contract VaultGateway is
                 usdtAddr,
                 3000
             );
-            IWeth(weth).withdrawTo(
+            require(msg.value >= _spentTokenToMintAmount, "VaultGateway::mintByNftETH: msg value not enough");
+            IWeth(weth).withdraw(msg.value - _spentTokenToMintAmount);
+            SafeToken.safeTransferETH(
                 msg.sender,
                 msg.value - _spentTokenToMintAmount
             );
@@ -255,11 +265,9 @@ contract VaultGateway is
                     _tokenToMintPrice > 0,
                     "VaultGateway::mintByNft: bad _tokenToMintPrice price"
                 );
-                uint256 _needTokenToMintAmount =
-                    (_needUsd *
-                        (10 **
-                            IERC20MetadataUpgradeable(_tokenToMint)
-                                .decimals())) /
+                uint256 _needTokenToMintAmount = (_needUsd *
+                    (10 **
+                        IERC20MetadataUpgradeable(_tokenToMint).decimals())) /
                     _tokenToMintPrice;
                 uint256 __slippage = _slippage;
                 if (__slippage == 0) {
@@ -444,7 +452,6 @@ contract VaultGateway is
             } else {
                 _upsSupply -= uint256(-_a);
             }
-            
         }
 
         int256 _totalTradePairFloat = totalTradePairFloat();

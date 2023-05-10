@@ -120,6 +120,15 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         uint256 _time
     );
 
+    event RebateRecordEvent(
+        address indexed _inviter,
+        address _invitee,
+        address _token,
+        uint256 _tokenAmount,
+        uint256 _rebates,
+        uint256 _time
+    );
+
     address[] public supportTokens;
     mapping(address => SupportTokenConfig) public supportTokenConfigs;
     mapping(address => SupportTokenInfo) public supportTokenInfos; // _collateralToken => SupportTokenInfo
@@ -424,9 +433,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         ];
         uint256 _rolloverFee = ((block.timestamp - _pos._openTime) *
             _supportTokenConfig._rolloverFeePerSecond *
-            _positionSize) /
-            _pos._leverage /
-            (10 ** 10);
+            _positionSize) / (10 ** 10);
         int256 _fundingFee = 0;
 
         int256 _tradeProfit = 0;
@@ -476,9 +483,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 );
         }
         uint256 _closeFee = (_positionSize *
-            _supportTokenConfig._closePositionFeeRate) /
-            10000 /
-            _pos._leverage;
+            _supportTokenConfig._closePositionFeeRate) / 10000;
         int256 _profit = _tradeProfit -
             int256(_rolloverFee) -
             _fundingFee -
@@ -648,6 +653,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 _collateralTokenAmount
             );
             if (_openFee > 0) {
+                _openFee = _processInviteReward(_collateralToken, _openFee);
                 SafeToken.safeApprove(
                     _collateralToken,
                     address(feeReceiver),
@@ -1007,6 +1013,32 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         );
     }
 
+    function _processInviteReward(address _token, uint256 _amount) private returns (uint256) {
+        if (
+            address(inviteManager) != address(0) &&
+            inviteManager.inviters(msg.sender) != address(0)
+        ) {
+            uint256 _inviteReward = (_amount *
+                inviteManager.inviteRateOfNftSell()) / 10000;
+            SafeToken.safeTransferFrom(
+                _token,
+                msg.sender,
+                inviteManager.inviters(msg.sender),
+                _inviteReward
+            );
+            emit RebateRecordEvent(
+                inviteManager.inviters(msg.sender),
+                msg.sender,
+                _token,
+                _amount,
+                _inviteReward,
+                block.timestamp
+            );
+            return _amount - _inviteReward;
+        }
+        return _amount;
+    }
+
     function _closePartPosition(
         Position memory _pos,
         uint256 _needClosePositionSize,
@@ -1059,14 +1091,15 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 uint256(-_posFundInfo._profit);
         }
 
+        uint256 _closeFee = _processInviteReward(_pos._collateralToken, _posFundInfo._closeFee);
         SafeToken.safeApprove(
             _pos._collateralToken,
             address(feeReceiver),
-            _posFundInfo._rolloverFee + _posFundInfo._closeFee
+            _posFundInfo._rolloverFee + _closeFee
         );
         feeReceiver.receiveFee(
             _pos._collateralToken,
-            _posFundInfo._rolloverFee + _posFundInfo._closeFee
+            _posFundInfo._rolloverFee + _closeFee
         );
 
         emit ClosePartPosition(

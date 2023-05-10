@@ -6,9 +6,5 @@ import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/tok
 interface IWeth is IERC20MetadataUpgradeable {
     function deposit() external payable;
 
-    function depositTo(address account) external payable;
-
     function withdraw(uint256 amount) external;
-
-    function withdrawTo(address account, uint256 amount) external;
 }

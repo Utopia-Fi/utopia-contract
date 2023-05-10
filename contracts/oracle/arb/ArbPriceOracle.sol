@@ -43,8 +43,8 @@ contract ArbPriceOracle is IPriceOracle, OwnableUpgradeable {
         gmxPriceFeeder = IGmxPriceFeeder(_gmxPriceFeeder);
     }
 
-    modifier onlyFeeder() {
-        require(msg.sender == feeder, "ArbPriceOracle::onlyFeeder: not feeder");
+    modifier onlyFeederOrOwner() {
+        require(msg.sender == feeder || msg.sender == owner(), "ArbPriceOracle::onlyFeederOrOwner: not feeder or owner");
         _;
     }
 
@@ -61,7 +61,7 @@ contract ArbPriceOracle is IPriceOracle, OwnableUpgradeable {
         uint256[] calldata _assetPrices,
         address _callAddr,
         bytes calldata _data
-    ) external onlyFeeder {
+    ) external onlyFeederOrOwner {
         require(
             _assetAddrs.length > 0,
             "ArbPriceOracle::feedAndCall: length is wrong"

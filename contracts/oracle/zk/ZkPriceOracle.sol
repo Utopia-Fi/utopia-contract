@@ -49,8 +49,8 @@ contract ZkPriceOracle is IPriceOracle, OwnableUpgradeable {
         diaOracle = _diaOracle;
     }
 
-    modifier onlyFeeder() {
-        require(msg.sender == feeder, "ZkPriceOracle::onlyFeeder: not feeder");
+    modifier onlyFeederOrOwner() {
+        require(msg.sender == feeder || msg.sender == owner(), "ZkPriceOracle::onlyFeederOrOwner: not feeder or owner");
         _;
     }
 
@@ -67,7 +67,7 @@ contract ZkPriceOracle is IPriceOracle, OwnableUpgradeable {
         uint256[] calldata _assetPrices,
         address _callAddr,
         bytes calldata _data
-    ) external onlyFeeder {
+    ) external onlyFeederOrOwner {
         require(
             _assetAddrs.length > 0,
             "ZkPriceOracle::feedAndCall: length is wrong"

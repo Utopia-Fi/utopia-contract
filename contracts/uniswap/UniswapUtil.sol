@@ -106,13 +106,18 @@ contract UniswapUtil is OwnableUpgradeable, ReentrancyGuardUpgradeable {
             "UniswapUtil::swapExactOutputSingle: greater than amountInMaximum"
         );
         uint256 _tokenOutBalAfter = __tokenIn.balanceOf(address(this));
+        uint256 _diff = _tokenOutBalAfter - _tokenOutBalBefore;
         if (_tokenOut == address(0)) {
-            weth.withdrawTo(msg.sender, _tokenOutBalAfter - _tokenOutBalBefore);
+            weth.withdraw(_diff);
+            SafeToken.safeTransferETH(
+                msg.sender,
+                _diff
+            );
         } else {
             SafeToken.safeTransfer(
                 _tokenOut,
                 msg.sender,
-                _tokenOutBalAfter - _tokenOutBalBefore
+                _diff
             );
         }
 

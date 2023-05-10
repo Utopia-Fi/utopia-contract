@@ -22,6 +22,10 @@ contract UniswapUtilTestnet is OwnableUpgradeable, ReentrancyGuardUpgradeable {
         weth = IWeth(_weth);
     }
 
+    function changeWeth(address _weth) external onlyOwner {
+        weth = IWeth(_weth);
+    }
+
     receive() external payable {}
 
     function swapExactInput(

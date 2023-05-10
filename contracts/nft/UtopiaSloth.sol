@@ -45,7 +45,8 @@ contract UtopiaSloth is
         uint256 _amount,
         address _token,
         uint256 _tokenAmount,
-        uint256 _rebates
+        uint256 _rebates,
+        uint256 _time
     );
 
     using StringsUpgradeable for uint256;
@@ -225,7 +226,8 @@ contract UtopiaSloth is
                     _amount,
                     _tokenToBuy,
                     _needEth,
-                    _inviteReward
+                    _inviteReward,
+                    block.timestamp
                 );
             } else {
                 SafeToken.safeTransferETH(foundation, _needEth);
@@ -268,7 +270,8 @@ contract UtopiaSloth is
                     _amount,
                     _tokenToBuy,
                     _needToken,
-                    _inviteReward
+                    _inviteReward,
+                    block.timestamp
                 );
             } else {
                 SafeToken.safeTransferFrom(
