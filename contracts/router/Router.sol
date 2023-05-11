@@ -149,10 +149,10 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         _;
     }
 
-    modifier onlyLiquidator() {
+    modifier onlyLiquidatorOrOwner() {
         require(
-            liquidators[msg.sender],
-            "VaultGateway::onlyLiquidator:: not liquidator"
+            liquidators[msg.sender] || msg.sender == owner(),
+            "VaultGateway::onlyLiquidatorOrOwner:: not liquidator or owner"
         );
         _;
     }
@@ -343,7 +343,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
     )
         external
         view
-        onlyLiquidator
+        onlyLiquidatorOrOwner
         returns (Position memory, PosFundInfo memory)
     {
         Position memory _pos = positions[_account][_collateralToken];
@@ -363,7 +363,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
     function liquidate(
         address _account,
         address _collateralToken
-    ) external onlyLiquidator {
+    ) external onlyLiquidatorOrOwner {
         Position storage _pos = positions[_account][_collateralToken];
         uint256 _tradePairTokenPrice = _price(tradePairToken);
         require(
@@ -653,6 +653,8 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 _collateralTokenAmount
             );
             if (_openFee > 0) {
+                _collateralTokenAmount -= _openFee;
+
                 _openFee = _processInviteReward(_collateralToken, _openFee);
                 SafeToken.safeApprove(
                     _collateralToken,
@@ -660,7 +662,6 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                     _openFee
                 );
                 feeReceiver.receiveFee(_collateralToken, _openFee);
-                _collateralTokenAmount -= _openFee;
             }
         }
         Position storage _pos = positions[msg.sender][_collateralToken];
@@ -863,9 +864,6 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             "Router::_decreasePosition: should not decrease position"
         );
         uint256 _positionSize = _pos._positionSize;
-        int256 _profit = 0;
-        uint256 _closeFee = 0;
-        uint256 _openFee = 0;
         if (_positionSize == _collateralTokenAmount * _leverage) {
             _isClosePos = true;
         }
@@ -881,16 +879,17 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             );
             (
                 uint256 _remainCollateralTokenAmount,
-                int256 __profit,
-                uint256 __closeFee
+                int256 _profit,
+                uint256 _closeFee
             ) = _closePartPosition(_pos, _positionSize, _tradePairTokenPrice);
-            _profit = __profit;
-            _closeFee = __closeFee;
-            SafeToken.safeTransfer(
-                _pos._collateralToken,
-                msg.sender,
-                _remainCollateralTokenAmount
-            );
+            if (_remainCollateralTokenAmount > 0) {
+                SafeToken.safeTransfer(
+                    _pos._collateralToken,
+                    msg.sender,
+                    _remainCollateralTokenAmount
+                );
+            }
+
             _pos._collateralTokenAmount = 0;
             _pos._positionSize = 0;
             emit ClosePosition(
@@ -899,6 +898,19 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 _tradePairTokenPrice,
                 _profit
             );
+            emit TradeHistory(
+                msg.sender,
+                _pos._collateralToken,
+                _collateralTokenAmount,
+                _tradePairTokenPrice,
+                _positionSize,
+                _pos._leverage,
+                _isLong,
+                _profit,
+                0,
+                _closeFee,
+                block.timestamp
+            );
         } else {
             require(
                 _pos._collateralTokenAmount > 0,
@@ -906,7 +918,7 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             );
             // transfer in _collateralToken
 
-            _openFee =
+            uint256 _openFee =
                 (_collateralTokenAmount *
                     _supportTokenConfig._openPositionFeeRate) /
                 10000;
@@ -929,6 +941,8 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             }
             _pos._collateralTokenAmount += _collateralTokenAmount;
             _positionSize = _collateralTokenAmount * _leverage;
+            int256 _profit = 0;
+            uint256 _closeFee = 0;
             if (_positionSize > _pos._positionSize) {
                 // reverse
                 _whenPosChanged(
@@ -987,6 +1001,19 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 _pos._positionSize >= _supportTokenConfig._minPositionSize,
                 "Router::_decreasePosition: _positionSize too small"
             );
+            emit TradeHistory(
+                msg.sender,
+                _pos._collateralToken,
+                _collateralTokenAmount,
+                _tradePairTokenPrice,
+                _collateralTokenAmount * _leverage,
+                _leverage,
+                _isLong,
+                _profit,
+                _openFee,
+                _closeFee,
+                block.timestamp
+            );
         }
 
         emit DecreasePosition(
@@ -997,32 +1024,20 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             _isLong,
             _tradePairTokenPrice
         );
-
-        emit TradeHistory(
-            msg.sender,
-            _pos._collateralToken,
-            _collateralTokenAmount,
-            _tradePairTokenPrice,
-            _collateralTokenAmount * _leverage,
-            _leverage,
-            _isLong,
-            _profit,
-            _openFee,
-            _closeFee,
-            block.timestamp
-        );
     }
 
-    function _processInviteReward(address _token, uint256 _amount) private returns (uint256) {
+    function _processInviteReward(
+        address _token,
+        uint256 _amount
+    ) private returns (uint256) {
         if (
             address(inviteManager) != address(0) &&
             inviteManager.inviters(msg.sender) != address(0)
         ) {
             uint256 _inviteReward = (_amount *
                 inviteManager.inviteRateOfNftSell()) / 10000;
-            SafeToken.safeTransferFrom(
+            SafeToken.safeTransfer(
                 _token,
-                msg.sender,
                 inviteManager.inviters(msg.sender),
                 _inviteReward
             );
@@ -1086,12 +1101,17 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
                 uint256(_posFundInfo._profit)
             );
         } else {
-            _remainCollateralTokenAmount =
-                _remainCollateralTokenAmount -
-                uint256(-_posFundInfo._profit);
+            if (_remainCollateralTokenAmount > uint256(-_posFundInfo._profit)) {
+                _remainCollateralTokenAmount -= uint256(-_posFundInfo._profit);
+            } else {
+                _remainCollateralTokenAmount = 0;
+            }
         }
 
-        uint256 _closeFee = _processInviteReward(_pos._collateralToken, _posFundInfo._closeFee);
+        uint256 _closeFee = _processInviteReward(
+            _pos._collateralToken,
+            _posFundInfo._closeFee
+        );
         SafeToken.safeApprove(
             _pos._collateralToken,
             address(feeReceiver),
