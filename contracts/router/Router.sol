@@ -918,10 +918,8 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
             );
             // transfer in _collateralToken
 
-            uint256 _openFee =
-                (_collateralTokenAmount *
-                    _supportTokenConfig._openPositionFeeRate) /
-                10000;
+            uint256 _openFee = (_collateralTokenAmount *
+                _supportTokenConfig._openPositionFeeRate) / 10000;
             if (_collateralTokenAmount > 0) {
                 SafeToken.safeTransferFrom(
                     _pos._collateralToken,
@@ -1076,51 +1074,51 @@ contract Router is OwnableUpgradeable, ReentrancyGuardUpgradeable, IRouter {
         );
 
         uint256 _remainCollateralTokenAmount = _pos._collateralTokenAmount;
+
+        uint256 _rolloverAndCloseFee = _processInviteReward(
+            _pos._collateralToken,
+            _posFundInfo._closeFee
+        ) + _posFundInfo._rolloverFee;
+        if (_rolloverAndCloseFee >= _remainCollateralTokenAmount) {
+            _rolloverAndCloseFee = _remainCollateralTokenAmount;
+            _remainCollateralTokenAmount = 0;
+        } else {
+            _remainCollateralTokenAmount -= _rolloverAndCloseFee;
+        }
+        if (_rolloverAndCloseFee > 0) {
+            SafeToken.safeApprove(
+                _pos._collateralToken,
+                address(feeReceiver),
+                _rolloverAndCloseFee
+            );
+            feeReceiver.receiveFee(_pos._collateralToken, _rolloverAndCloseFee);
+        }
+
         if (_posFundInfo._tradeProfit > 0) {
             vaultGateway.sendProfit(
-                address(this),
+                msg.sender,
                 _pos._collateralToken,
                 uint256(_posFundInfo._tradeProfit)
             );
         } else if (_posFundInfo._tradeProfit < 0) {
             uint256 _loss = uint256(-_posFundInfo._tradeProfit);
-
-            SafeToken.safeApprove(
-                _pos._collateralToken,
-                address(vaultGateway),
-                _loss
-            );
-            vaultGateway.receiveLoss(_pos._collateralToken, _loss);
+            if (_loss >= _remainCollateralTokenAmount) {
+                _loss = _remainCollateralTokenAmount;
+                _remainCollateralTokenAmount = 0;
+            } else {
+                _remainCollateralTokenAmount -= _loss;
+            }
+            if (_loss > 0) {
+                SafeToken.safeApprove(
+                    _pos._collateralToken,
+                    address(vaultGateway),
+                    _loss
+                );
+                vaultGateway.receiveLoss(_pos._collateralToken, _loss);
+            }
         }
         _info._realizedTradeProfit += _posFundInfo._tradeProfit;
 
-        if (_posFundInfo._profit > 0) {
-            SafeToken.safeTransfer(
-                _pos._collateralToken,
-                msg.sender,
-                uint256(_posFundInfo._profit)
-            );
-        } else {
-            if (_remainCollateralTokenAmount > uint256(-_posFundInfo._profit)) {
-                _remainCollateralTokenAmount -= uint256(-_posFundInfo._profit);
-            } else {
-                _remainCollateralTokenAmount = 0;
-            }
-        }
-
-        uint256 _closeFee = _processInviteReward(
-            _pos._collateralToken,
-            _posFundInfo._closeFee
-        );
-        SafeToken.safeApprove(
-            _pos._collateralToken,
-            address(feeReceiver),
-            _posFundInfo._rolloverFee + _closeFee
-        );
-        feeReceiver.receiveFee(
-            _pos._collateralToken,
-            _posFundInfo._rolloverFee + _closeFee
-        );
 
         emit ClosePartPosition(
             msg.sender,

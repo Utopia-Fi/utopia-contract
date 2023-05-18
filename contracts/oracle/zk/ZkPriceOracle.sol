@@ -3,7 +3,11 @@ pragma solidity ^0.8.0;
 
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IPriceOracle} from "../../interface/IPriceOracle.sol";
+import {IVaultGateway} from "../../interface/IVaultGateway.sol";
+import {ISyncSwapPool} from "../../interface/ISyncSwapPool.sol";
 import {AddressUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/AddressUpgradeable.sol";
+import {IERC20MetadataUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/IERC20MetadataUpgradeable.sol";
+
 
 struct Asset {
     string _name;
@@ -29,6 +33,11 @@ contract ZkPriceOracle is IPriceOracle, OwnableUpgradeable {
 
     address public diaOracle;
 
+    address public ups;
+    address public vaultGateway;
+    address public uptUpsLp;
+    address public upt;
+
     function initialize(
         Asset[] memory _assets,
         address _baseCurrency,
@@ -47,6 +56,13 @@ contract ZkPriceOracle is IPriceOracle, OwnableUpgradeable {
 
         feeder = _feeder;
         diaOracle = _diaOracle;
+    }
+
+    function changeAddresses(address _ups, address _vaultGateway, address _uptUpsLp, address _upt) external onlyOwner {
+        ups = _ups;
+        vaultGateway = _vaultGateway;
+        uptUpsLp = _uptUpsLp;
+        upt = _upt;
     }
 
     modifier onlyFeederOrOwner() {
@@ -102,6 +118,23 @@ contract ZkPriceOracle is IPriceOracle, OwnableUpgradeable {
     ) public view returns (uint256[] memory) {
         uint256[] memory _prices = new uint256[](2);
         // 1
+        if (_assetAddr == ups) {
+            _prices[0] = IVaultGateway(vaultGateway).utopiaTokenPrice();
+            return _prices;
+        }
+
+        if (_assetAddr == upt) {
+            uint256 _upsAmount = ISyncSwapPool(uptUpsLp).getAmountOut(upt, 10 ** IERC20MetadataUpgradeable(upt).decimals(), address(0));
+            _prices[0] = _upsAmount * getPrices(ups)[0] / (10 ** IERC20MetadataUpgradeable(ups).decimals());
+            return _prices;
+        }
+
+        if (_assetAddr == uptUpsLp) {
+            (, uint _upsAmount) = ISyncSwapPool(uptUpsLp).getReserves();
+            uint256 _lpSupply = ISyncSwapPool(uptUpsLp).totalSupply();
+            _prices[0] = _upsAmount * getPrices(ups)[0] * 2 * (10 ** IERC20MetadataUpgradeable(uptUpsLp).decimals()) / _lpSupply / (10 ** IERC20MetadataUpgradeable(ups).decimals());
+            return _prices;
+        }
         _prices[0] = feedPrices[_assetAddr];
 
         // 2
